@@ -70,18 +70,30 @@ const qtyClass = (v) => {
   return n > 0 ? "qty-pos" : "qty-neg";
 };
 const EMPLOYEE_NUMBER_ALIASES = new Map([
+  ["070516", "2411002"], // 변형주: 2024년 11월 사번 변경
+  ["1501225", "2511003"], // 강수빈: 2025년 11월 사번 변경
+  ["1911132", "2512001"], // 김도연: 2025년 12월 사번 변경
+  ["1708087", "2511002"], // 이예지: 2025년 11월 사번 변경
+  ["1604035", "2510001"], // 이춘구: 2025년 10월 사번 변경
+  ["1304134", "2605005"], // 임환희: 2026년 5월 사번 변경
   ["1606191", "2605006"], // 신흥순: 퇴직금 정산 후 신규 사번 발급
   ["2011131", "2607009"], // 김희진: 2026년 7월 사번 변경
   ["1804015", "2607008"], // 최태규: 2026년 7월 사번 변경
   ["1511060", "2511001"], // 문경진: 2025년 11월 사번 변경
   ["2206126", "2605007"], // 김대근: 2026년 5월 사번 변경
 ]);
+const EMPLOYEE_NUMBER_CANONICAL = new Map();
+EMPLOYEE_NUMBER_ALIASES.forEach((currentEmp, formerEmp) => {
+  EMPLOYEE_NUMBER_CANONICAL.set(norm(formerEmp), norm(currentEmp));
+  EMPLOYEE_NUMBER_CANONICAL.set(norm(currentEmp), norm(currentEmp));
+});
 const personKey = (r) => {
+  const emp = norm(r.emp);
+  const canonicalEmp = EMPLOYEE_NUMBER_CANONICAL.get(emp);
+  if (canonicalEmp) return "emp:" + canonicalEmp;
   const alias = norm(r.person_alias || r.person_key);
   if (alias) return "alias:" + alias;
-  const emp = norm(r.emp);
-  const canonicalEmp = EMPLOYEE_NUMBER_ALIASES.get(emp) || emp;
-  return canonicalEmp ? "emp:" + canonicalEmp : "name:" + norm((r.name || "") + "|" + (r.pos || ""));
+  return emp ? "emp:" + emp : "name:" + norm((r.name || "") + "|" + (r.pos || ""));
 };
 
 function noteInfo(item) {

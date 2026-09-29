@@ -92,8 +92,9 @@ body.logged-out .login-heading {
 }
 body.logged-out .login-heading span {
   color: #2563eb;
-  font-size: 14px;
-  letter-spacing: .08em;
+  font-size: clamp(18px, 2.3vw, 22px);
+  line-height: 1.2;
+  letter-spacing: .045em;
 }
 body.logged-out .login-heading strong {
   font-size: clamp(34px, 5vw, 46px);
@@ -102,8 +103,8 @@ body.logged-out .login-heading strong {
 }
 body.logged-out .login-brand-logo {
   display: block;
-  width: 76px;
-  height: 76px;
+  width: 82px;
+  height: 82px;
   object-fit: contain;
   justify-self: center;
   margin: -4px 0 -2px;
@@ -1044,8 +1045,8 @@ tbody tr:hover { background: rgba(232,242,255,.70); }
 .side-item.quarter-item { font-weight: 500; }
 .region-option { font-weight: 500; }
 .region-option.active { font-weight: 650; }
-.brand strong { font-weight: 700; }
-.brand span { font-weight: 500; }
+.brand strong { font-size: 17px; line-height: 1.25; font-weight: 700; }
+.brand span { margin-top: 3px; font-size: 13px; line-height: 1.3; font-weight: 500; }
 
 
 /* Final sidebar weight pass: keep labels crisp, not heavy. */

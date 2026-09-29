@@ -1,4 +1,4 @@
-const DATA_URL = "webdata.bin";
+const DATA_URL = "webdata.bin?v=20260929_kim_jaemin_1";
 const MAGIC = new TextEncoder().encode("SCOREENC\n");
 const SALT_LEN = 16;
 const NONCE_LEN = 12;
@@ -71,6 +71,10 @@ const qtyClass = (v) => {
 };
 const EMPLOYEE_NUMBER_ALIASES = new Map([
   ["1606191", "2605006"], // 신흥순: 퇴직금 정산 후 신규 사번 발급
+  ["2011131", "2607009"], // 김희진: 2026년 7월 사번 변경
+  ["1804015", "2607008"], // 최태규: 2026년 7월 사번 변경
+  ["1511060", "2511001"], // 문경진: 2025년 11월 사번 변경
+  ["2206126", "2605007"], // 김대근: 2026년 5월 사번 변경
 ]);
 const personKey = (r) => {
   const alias = norm(r.person_alias || r.person_key);
@@ -894,6 +898,7 @@ function logout() {
   detailTab = "summary";
   selectedQuantityKey = null;
   if ($("modalCodeInput")) $("modalCodeInput").value = "";
+  if ($("employeeLoginInput")) $("employeeLoginInput").value = "";
   if ($("regionPasswordInput")) $("regionPasswordInput").value = "";
   getSearchInput().value = "";
   $("loginToolbar").classList.remove("hidden");
@@ -923,6 +928,9 @@ function resetHome() {
   detailTab = "summary";
   selectedQuantityKey = null;
   closeLoginModal();
+  if ($("employeeLoginInput")) $("employeeLoginInput").value = "";
+  if ($("regionPasswordInput")) $("regionPasswordInput").value = "";
+  if ($("modalCodeInput")) $("modalCodeInput").value = "";
   if ($("qInput")) $("qInput").value = "";
   if ($("qInputInline")) $("qInputInline").value = "";
   if ($("regionFilter")) $("regionFilter").value = "";

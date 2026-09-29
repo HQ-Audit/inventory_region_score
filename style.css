@@ -52,6 +52,89 @@ button { -webkit-tap-highlight-color: transparent; }
   grid-template-columns: 264px 1fr;
   gap: 0;
 }
+body.logged-out .app-shell {
+  display: block;
+}
+body.logged-out .sidebar,
+body.logged-out .topbar,
+body.logged-out .official-notice,
+body.logged-out .intro-panel,
+body.logged-out .legend-panel,
+body.logged-out #loginNotice {
+  display: none !important;
+}
+body.logged-out .main {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+body.logged-out .login-panel {
+  width: min(100%, 520px);
+  grid-template-columns: 1fr;
+  gap: 26px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+body.logged-out .login-heading {
+  padding: 0;
+  text-align: center;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  gap: 8px;
+}
+body.logged-out .login-heading span {
+  color: #2563eb;
+  font-size: 14px;
+  letter-spacing: .08em;
+}
+body.logged-out .login-heading strong {
+  font-size: clamp(34px, 5vw, 46px);
+  line-height: 1.12;
+  letter-spacing: -.045em;
+}
+body.logged-out .login-brand-logo {
+  display: block;
+  width: 76px;
+  height: 76px;
+  object-fit: contain;
+  justify-self: center;
+  margin: -4px 0 -2px;
+  filter: drop-shadow(0 10px 16px rgba(15,23,42,.12));
+}
+body.logged-out .login-fields {
+  grid-template-columns: 1fr;
+  gap: 10px;
+  padding: 32px;
+  border: 1px solid rgba(255,255,255,.72);
+  border-radius: 14px;
+  background: rgba(255,255,255,.84);
+  box-shadow: 0 24px 64px rgba(15,23,42,.13);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+}
+body.logged-out .login-fields label {
+  margin-top: 7px;
+  font-size: 13px;
+}
+body.logged-out .login-fields input {
+  min-height: 50px;
+  padding: 13px 14px;
+  font-size: 15px;
+}
+body.logged-out .login-fields .primary {
+  width: 100%;
+  min-height: 52px;
+  margin-top: 10px;
+  font-size: 16px;
+}
 .sidebar {
   position: sticky;
   top: 0;
@@ -239,13 +322,15 @@ body .official-notice .notice-copy { display: grid; gap: 7px; line-height: 1.52;
 }
 .login-panel {
   display: grid;
-  grid-template-columns: minmax(260px, .95fr) minmax(260px, 1.05fr);
+  grid-template-columns: minmax(190px, .72fr) minmax(360px, 1.4fr) minmax(220px, .88fr);
   gap: 12px;
   align-items: stretch;
   padding: 12px;
   margin-bottom: 14px;
 }
 .selected-region-card,
+.login-heading,
+.login-fields,
 .scope-note,
 body .intro-item,
 body .insight-card,
@@ -259,6 +344,20 @@ body .audit-event {
   box-shadow: inset 0 1px 0 rgba(255,255,255,.42);
 }
 .selected-region-card { padding: 11px 12px; }
+.login-heading,
+.login-fields { padding: 14px; }
+.login-heading { display: grid; align-content: center; gap: 4px; }
+.login-heading span { color: #2563eb; font-size: 12px; font-weight: 800; }
+.login-heading strong { color: #111827; font-size: 20px; }
+.login-heading small { color: var(--muted); line-height: 1.45; }
+.login-fields {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 1fr) auto minmax(160px, 1.2fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.login-fields label { color: #475467; font-size: 12px; font-weight: 800; white-space: nowrap; }
+.login-fields .primary { min-height: 40px; }
 .selected-region-card span,
 .scope-note strong { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
 .selected-region-card strong { display: block; font-size: 20px; color: #111827; }
@@ -829,9 +928,16 @@ body .legend-item span {
   body .intro-grid { grid-template-columns: 1fr; }
   h1 { font-size: 23px; }
   body .intro-panel h2 { font-size: 21px; }
+  .login-fields { grid-template-columns: 1fr; }
+  .login-fields label { margin-top: 2px; }
+  .login-fields .primary { width: 100%; margin-top: 4px; }
   .login-controls .primary { width: 100%; }
   .modal-backdrop { align-items: end; padding: 12px; }
   .modal-card { border-radius: 12px; padding: 16px; }
+  body.logged-out .main { padding: 24px 18px; }
+  body.logged-out .login-panel { padding: 0; gap: 20px; }
+  body.logged-out .login-brand-logo { width: 66px; height: 66px; }
+  body.logged-out .login-fields { padding: 24px 22px; }
   .metric { min-height: auto; }
 }
 

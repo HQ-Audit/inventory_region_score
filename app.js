@@ -21,17 +21,22 @@ let currentQuarter = null;
 let currentQuarterData = null;
 let selectedLoginDd = null;
 let currentDd = null;
+let currentManagerName = "";
 let isMaster = false;
 let peopleRows = [];
 let selectedPersonKey = null;
 let expandedQuarterYears = new Set();
 let quarterTreeBootstrapped = false;
-let loginModalMode = "region";
+let loginModalMode = "master";
 let detailTab = "summary";
 let selectedQuantityKey = null;
 
 const $ = (id) => document.getElementById(id);
 const norm = (s) => String(s || "").replace(/\s+/g, "").trim().toLowerCase();
+const normalizeLoginEmployeeId = (value) => {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits.length === 5 ? digits.padStart(6, "0") : digits;
+};
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 const fmt2 = (v) => {
   const n = Number(v);
@@ -46,17 +51,20 @@ const fmtDelta = (v, empty = "N/A") => {
   return (v > 0 ? "+" : "") + fmt2(v);
 };
 const fmtQty = (v) => {
+  if (v === null || v === undefined || v === "") return "-";
   const n = Number(v);
   if (!Number.isFinite(n)) return "-";
   return n.toLocaleString("ko-KR", { maximumFractionDigits: 2 });
 };
 const fmtQtyDiff = (v) => {
+  if (v === null || v === undefined || v === "") return "-";
   const n = Number(v);
   if (!Number.isFinite(n)) return "-";
   if (Math.abs(n) < 0.0005) return "0";
   return (n > 0 ? "+" : "") + fmtQty(n);
 };
 const qtyClass = (v) => {
+  if (v === null || v === undefined || v === "") return "flat";
   const n = Number(v);
   if (!Number.isFinite(n) || Math.abs(n) < 0.0005) return "flat";
   return n > 0 ? "qty-pos" : "qty-neg";
@@ -154,7 +162,7 @@ async function loadData() {
   setCurrentQuarter(defaultQuarterId());
   fillQuarterControls();
   fillRegionsForQuarter();
-  setStatus("지역 선택 대기");
+  setStatus("로그인 대기");
 }
 
 function quarterEntries() {
@@ -287,7 +295,7 @@ function fillQuarterControls() {
         detailTab = "summary";
         selectedQuantityKey = null;
         paintRegion(currentDd, true);
-        setStatus(currentQuarterLabel() + (isMaster ? " · 마스터 · " : " · ") + currentDd + " 조회 중");
+        setStatus(currentQuarterLabel() + (isMaster ? " · 마스터 · " : " · ") + currentDd + (currentManagerName ? " · " + currentManagerName : "") + " 조회 중");
         doSearch();
       }
     });
@@ -296,16 +304,16 @@ function fillQuarterControls() {
 
 function fillRegionsForQuarter() {
   const regions = Object.keys(currentQuarterData.regions || {}).sort((a, b) => a.localeCompare(b, "ko"));
-  const preferred = currentDd || selectedLoginDd;
-  selectedLoginDd = currentDd ? (regions.includes(preferred) ? preferred : null) : null;
-  updateSelectedRegion();
+  const visibleRegions = isMaster ? regions : (currentDd && regions.includes(currentDd) ? [currentDd] : []);
+  selectedLoginDd = currentDd && regions.includes(currentDd) ? currentDd : null;
   const picker = $("regionPicker");
-  picker.innerHTML = regions.map((dd) =>
+  picker.innerHTML = visibleRegions.map((dd) =>
     '<div class="region-row" data-region-row="' + dd + '">' +
       '<button class="region-option" type="button" role="option" data-region="' + dd + '">' + dd + '</button>' +
-      '<button class="region-access" type="button" data-region-access="' + dd + '" aria-label="' + dd + ' 접속">접속</button>' +
     '</div>'
   ).join("");
+  if ($("regionNav")) $("regionNav").classList.toggle("hidden", visibleRegions.length === 0);
+  if ($("regionFilter")) $("regionFilter").classList.toggle("hidden", !isMaster);
   paintRegion(currentDd || selectedLoginDd || "", Boolean(currentDd));
   if ($("regionFilter")) {
     $("regionFilter").oninput = applyRegionFilter;
@@ -317,37 +325,16 @@ function fillRegionsForQuarter() {
       selectedLoginDd = button.dataset.region;
       if (isMaster) {
         currentDd = selectedLoginDd;
+        currentManagerName = regionManager(currentDd);
         selectedPersonKey = null;
         detailTab = "summary";
         selectedQuantityKey = null;
         paintRegion(currentDd, true);
-        setStatus(currentQuarterLabel() + " · 마스터 · " + currentDd + " 조회 중");
+        setStatus(currentQuarterLabel() + " · 마스터 · " + currentDd + (currentManagerName ? " · " + currentManagerName : "") + " 조회 중");
         doSearch();
-      } else {
-        paintRegion(selectedLoginDd, false);
-        updateSelectedRegion();
       }
     });
   });
-  picker.querySelectorAll("[data-region-access]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      if (currentDd && !isMaster) return;
-      selectedLoginDd = button.dataset.regionAccess;
-      paintRegion(selectedLoginDd, false);
-      updateSelectedRegion();
-      openLoginModal("region");
-    });
-  });
-}
-
-function updateSelectedRegion() {
-  const manager = regionManager(selectedLoginDd);
-  $("selectedRegionName").innerHTML = selectedLoginDd ? selectedLoginDd + (manager ? '<small>(' + manager + ')</small>' : "") : "지역을 선택하세요";
-  if ($("enterBtn")) {
-    $("enterBtn").disabled = !selectedLoginDd;
-    $("enterBtn").textContent = selectedLoginDd ? "접속" : "지역 선택";
-  }
 }
 
 function applyRegionFilter() {
@@ -381,6 +368,26 @@ function validateRegion(dd, code) {
   if (!expected) throw new Error("지역 정보가 없습니다.");
   if (norm(code) !== expected) throw new Error("지역/암호가 틀립니다.");
   return "region";
+}
+
+function validateEmployeeLogin(employeeId, code) {
+  const emp = normalizeLoginEmployeeId(employeeId);
+  if (!emp) throw new Error("사번을 입력하세요.");
+  const accounts = dataObj && dataObj.accounts;
+  if (!accounts || typeof accounts !== "object") {
+    throw new Error("지역장 사번 정보가 아직 웹데이터에 반영되지 않았습니다.");
+  }
+  const account = accounts[emp];
+  if (!account) throw new Error("등록되지 않은 지역장 사번입니다.");
+  const dd = typeof account === "string" ? account : account.region;
+  const manager = typeof account === "string" ? regionManager(dd) : String(account.manager || "").trim();
+  if (!dd) throw new Error("사번에 연결된 지역 정보가 없습니다.");
+  if (!Object.prototype.hasOwnProperty.call(currentQuarterData.regions || {}, dd)) {
+    throw new Error("선택한 분기에 담당 지역 정보가 없습니다.");
+  }
+  const mode = validateRegion(dd, code);
+  if (mode !== "region") throw new Error("지역 비밀번호를 확인하세요.");
+  return { dd, manager };
 }
 
 function isTargetPosition(pos) {
@@ -418,8 +425,17 @@ function recordDate(row, rec) {
 }
 
 function quantityValue(detail, key) {
-  const n = Number(detail?.[key]);
+  const raw = detail?.[key];
+  if (raw === null || raw === undefined || raw === "") return null;
+  const n = Number(raw);
   return Number.isFinite(n) ? n : null;
+}
+
+function categoryHasData(detail, keys) {
+  return keys.some((key) => {
+    const value = quantityValue(detail, key);
+    return value !== null && Math.abs(value) > 0.000001;
+  });
 }
 
 function quantityRecordKey(row, rec, index) {
@@ -440,7 +456,14 @@ function quantityRecordsForPerson(person) {
       .sort((a, b) => String(recordDate(row, b.rec)).localeCompare(String(recordDate(row, a.rec))))
       .forEach(({ rec, index }) => {
       const detail = rec.detail || {};
-      const hasQuantity = ["F", "H", "I", "O", "Q", "R", "X", "Z", "AA", "AG", "AI", "AJ"].some((key) => quantityValue(detail, key) !== null);
+      const isFnbLayout = quantityValue(detail, "AY") !== null;
+      const categorySignals = [
+        ["F", "H", "M", "N"],
+        ["O", "Q", "V", "W"],
+        ["X", "Z", "AE", "AF"],
+        ...(isFnbLayout ? [["AG", "AI", "AN", "AO"]] : []),
+      ];
+      const hasQuantity = categorySignals.some((keys) => categoryHasData(detail, keys));
       records.push({
         key: quantityRecordKey(row, rec, index),
         row,
@@ -466,12 +489,21 @@ function defaultQuantityKey(records) {
 
 function quantityRows(record) {
   const detail = record?.detail || {};
-  return [
-    { label: "신발", system: detail.F, actual: detail.H, diff: detail.I },
-    { label: "용품", system: detail.O, actual: detail.Q, diff: detail.R },
-    { label: "의류", system: detail.X, actual: detail.Z, diff: detail.AA },
-    { label: "합계", system: detail.AG, actual: detail.AI, diff: detail.AJ, total: true },
-  ];
+  const rows = [
+    { label: "신발", system: detail.F, actual: detail.H, diff: detail.I, signals: ["F", "H", "M", "N"] },
+    { label: "용품", system: detail.O, actual: detail.Q, diff: detail.R, signals: ["O", "Q", "V", "W"] },
+    { label: "의류", system: detail.X, actual: detail.Z, diff: detail.AA, signals: ["X", "Z", "AE", "AF"] },
+  ].filter((row) => categoryHasData(detail, row.signals));
+  const isFnbLayout = quantityValue(detail, "AY") !== null;
+  if (isFnbLayout) {
+    if (categoryHasData(detail, ["AG", "AI", "AN", "AO"])) {
+      rows.push({ label: "FNB", system: detail.AG, actual: detail.AI, diff: detail.AJ });
+    }
+    if (rows.length) rows.push({ label: "합계", system: detail.AP, actual: detail.AR, diff: detail.AS, total: true });
+  } else {
+    if (rows.length) rows.push({ label: "합계", system: detail.AG, actual: detail.AI, diff: detail.AJ, total: true });
+  }
+  return rows;
 }
 
 function groupByPerson(rows) {
@@ -493,9 +525,21 @@ function scoreOf(row) {
   return Number.isFinite(n) ? n : null;
 }
 
+function currentStores(rows) {
+  const orderedRows = rows.slice().sort((a, b) => {
+    const handoverOrder = Number(isHandoverRow(a)) - Number(isHandoverRow(b));
+    if (handoverOrder) return handoverOrder;
+    const dateOrder = String(rowDate(b)).localeCompare(String(rowDate(a)));
+    if (dateOrder) return dateOrder;
+    return String(a.store || "").localeCompare(String(b.store || ""), "ko");
+  });
+  return [...new Set(orderedRows.map((row) => row.store).filter(Boolean))];
+}
+
 function buildPeopleRows() {
   const query = norm(getSearchInput().value);
-  const currentRows = rowsForQuarter(currentQuarter).filter((r) => r.dd === currentDd && !isHandoverRow(r));
+  // 같은 분기 안의 정기·인수인계·인수인계 대체 기록은 모두 해당 분기 점수다.
+  const currentRows = rowsForQuarter(currentQuarter).filter((r) => r.dd === currentDd);
   const allowedKeys = new Set(currentRows.map(personKey));
   const historyByPerson = groupByPerson(rowsThroughSelectedQuarter().filter((r) => allowedKeys.has(personKey(r))));
   const currentByPerson = groupByPerson(currentRows);
@@ -508,7 +552,7 @@ function buildPeopleRows() {
     });
     const scores = history.map(scoreOf).filter((v) => v !== null);
     const currentScores = history
-      .filter((r) => r._quarterId === currentQuarter && !isHandoverRow(r))
+      .filter((r) => r._quarterId === currentQuarter)
       .map(scoreOf)
       .filter((v) => v !== null);
     const currentAvg = avg(currentScores);
@@ -520,7 +564,7 @@ function buildPeopleRows() {
     const historyAvg = avg(scores);
     const avgDelta = currentAvg !== null && historyAvg !== null ? currentAvg - historyAvg : null;
     const first = rows[0];
-    const stores = [...new Set(rows.map((r) => r.store).filter(Boolean))];
+    const stores = currentStores(rows);
     return {
       key,
       name: first.name || "",
@@ -677,7 +721,7 @@ function renderDetail(person) {
     : '<div class="empty compact">표시할 조사 기록이 없습니다.</div>';
   const missingQuantityMessage = selectedRecord && quarterRank(selectedRecord.quarterId) < quarterRank("2026Q1")
     ? "2025년 자료는 점수 이력용으로 제공합니다. 수량 상세는 2026년 자료부터 표시됩니다."
-    : "이 기록에는 신발/용품/의류 수량 상세가 없습니다.";
+    : "이 기록에는 신발/용품/의류/FNB 수량 상세가 없습니다.";
   const quantityTable = selectedRecord && selectedRecord.hasQuantity
     ? '<div class="quantity-table-wrap"><table class="quantity-table"><thead><tr><th>구분</th><th class="num">전산</th><th class="num">실물</th><th class="num">차이</th></tr></thead><tbody>' +
       quantityRows(selectedRecord).map((row) => '<tr class="' + (row.total ? "total" : "") + '"><td>' + row.label + '</td><td class="num">' + fmtQty(row.system) + '</td><td class="num">' + fmtQty(row.actual) + '</td><td class="num ' + qtyClass(row.diff) + '">' + fmtQtyDiff(row.diff) + '</td></tr>').join("") +
@@ -724,7 +768,6 @@ function doSearch() {
   const previousKey = selectedPersonKey;
   if (!peopleRows.some((p) => p.key === selectedPersonKey)) selectedPersonKey = peopleRows[0]?.key || null;
   if (previousKey !== selectedPersonKey) {
-    detailTab = "summary";
     selectedQuantityKey = null;
   }
   const selected = peopleRows.find((p) => p.key === selectedPersonKey);
@@ -735,7 +778,6 @@ function doSearch() {
 
 function selectPerson(key) {
   if (selectedPersonKey !== key) {
-    detailTab = "summary";
     selectedQuantityKey = null;
   }
   selectedPersonKey = key;
@@ -750,17 +792,12 @@ function firstRegionForQuarter() {
   return Object.keys(currentQuarterData.regions || {}).sort((a, b) => a.localeCompare(b, "ko"))[0] || "";
 }
 
-function openLoginModal(mode = "region") {
+function openLoginModal(mode = "master") {
   if (!dataObj || !currentQuarterData) {
     alert("데이터 로드가 끝난 뒤 다시 시도하세요.");
     return;
   }
   loginModalMode = mode;
-  if (mode === "region" && !selectedLoginDd) {
-    setStatus("지역 선택 대기");
-    alert("왼쪽 지역 목록에서 접속할 지역을 먼저 선택하세요.");
-    return;
-  }
   const modal = $("loginModal");
   const input = $("modalCodeInput");
   const region = selectedLoginDd || currentDd || firstRegionForQuarter();
@@ -785,14 +822,16 @@ function closeLoginModal() {
   if ($("modalCodeInput")) $("modalCodeInput").value = "";
 }
 
-function completeLogin(dd) {
+function completeLogin(dd, managerName = "") {
   currentDd = dd;
+  currentManagerName = managerName || (isMaster ? regionManager(dd) : "");
+  document.body.classList.remove("logged-out");
   selectedLoginDd = dd;
   selectedPersonKey = null;
   detailTab = "summary";
   selectedQuantityKey = null;
+  fillRegionsForQuarter();
   paintRegion(dd, true);
-  updateSelectedRegion();
   closeLoginModal();
   $("loginToolbar").classList.add("hidden");
   $("loginNotice").classList.add("hidden");
@@ -801,8 +840,28 @@ function completeLogin(dd) {
   if ($("summaryGrid")) $("summaryGrid").classList.remove("hidden");
   $("searchToolbar").classList.remove("hidden");
   $("contentGrid").classList.remove("hidden");
-  setStatus(currentQuarterLabel() + (isMaster ? " · 마스터 · " : " · ") + dd + " 조회 중");
+  setStatus(currentQuarterLabel() + (isMaster ? " · 마스터 · " : " · ") + dd + (currentManagerName ? " · " + currentManagerName : "") + " 조회 중");
   doSearch();
+}
+
+function submitEmployeeLogin() {
+  try {
+    if (!dataObj || !currentQuarterData) throw new Error("데이터 로드가 끝난 뒤 다시 시도하세요.");
+    const employeeId = $("employeeLoginInput") ? $("employeeLoginInput").value : "";
+    const code = $("regionPasswordInput") ? $("regionPasswordInput").value : "";
+    if (norm(employeeId) === norm(MASTER_KEY) && !String(code || "").trim()) {
+      const dd = firstRegionForQuarter();
+      if (!dd) throw new Error("조회할 지역 정보가 없습니다.");
+      isMaster = true;
+      completeLogin(dd);
+      return;
+    }
+    const account = validateEmployeeLogin(employeeId, code);
+    isMaster = false;
+    completeLogin(account.dd, account.manager);
+  } catch (err) {
+    alert(err.message || String(err));
+  }
 }
 
 function submitLoginModal() {
@@ -826,17 +885,16 @@ function submitLoginModal() {
   }
 }
 
-function enter() {
-  openLoginModal("region");
-}
-
 function logout() {
   currentDd = null;
+  currentManagerName = "";
+  document.body.classList.add("logged-out");
   isMaster = false;
   selectedPersonKey = null;
   detailTab = "summary";
   selectedQuantityKey = null;
   if ($("modalCodeInput")) $("modalCodeInput").value = "";
+  if ($("regionPasswordInput")) $("regionPasswordInput").value = "";
   getSearchInput().value = "";
   $("loginToolbar").classList.remove("hidden");
   $("loginNotice").classList.remove("hidden");
@@ -846,16 +904,18 @@ function logout() {
   $("searchToolbar").classList.add("hidden");
   $("contentGrid").classList.add("hidden");
   fillRegionsForQuarter();
-  setStatus("지역 선택 대기");
+  setStatus("로그인 대기");
 }
 
 function resetHome() {
   if (!dataObj) return;
+  document.body.classList.add("logged-out");
   expandedQuarterYears = new Set();
   quarterTreeBootstrapped = false;
   setCurrentQuarter(defaultQuarterId());
   fillQuarterControls();
   currentDd = null;
+  currentManagerName = "";
   isMaster = false;
   selectedLoginDd = null;
   selectedPersonKey = null;
@@ -875,10 +935,12 @@ function resetHome() {
   $("contentGrid").classList.add("hidden");
   fillRegionsForQuarter();
   renderDetail(null);
-  setStatus("지역 선택 대기");
+  setStatus("로그인 대기");
 }
 
-$("enterBtn").addEventListener("click", enter);
+if ($("employeeLoginBtn")) $("employeeLoginBtn").addEventListener("click", submitEmployeeLogin);
+if ($("employeeLoginInput")) $("employeeLoginInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("regionPasswordInput").focus(); });
+if ($("regionPasswordInput")) $("regionPasswordInput").addEventListener("keydown", (e) => { if (e.key === "Enter") submitEmployeeLogin(); });
 if ($("masterAccessBtn")) $("masterAccessBtn").addEventListener("click", () => openLoginModal("master"));
 if ($("loginModalSubmit")) $("loginModalSubmit").addEventListener("click", submitLoginModal);
 if ($("modalCodeInput")) $("modalCodeInput").addEventListener("keydown", (e) => { if (e.key === "Enter") submitLoginModal(); });

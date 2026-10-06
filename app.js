@@ -30,6 +30,9 @@ let quarterTreeBootstrapped = false;
 let loginModalMode = "master";
 let detailTab = "summary";
 let selectedQuantityKey = null;
+let mainView = "manager";
+let storeRows = [];
+let selectedStoreKey = null;
 
 const $ = (id) => document.getElementById(id);
 const norm = (s) => String(s || "").replace(/\s+/g, "").trim().toLowerCase();
@@ -312,7 +315,7 @@ function fillQuarterControls() {
         selectedQuantityKey = null;
         paintRegion(currentDd, true);
         setStatus(currentQuarterLabel() + (isMaster ? " · 마스터 · " : " · ") + currentDd + (currentManagerName ? " · " + currentManagerName : "") + " 조회 중");
-        doSearch();
+        renderActiveView();
       }
     });
   });
@@ -347,7 +350,7 @@ function fillRegionsForQuarter() {
         selectedQuantityKey = null;
         paintRegion(currentDd, true);
         setStatus(currentQuarterLabel() + " · 마스터 · " + currentDd + (currentManagerName ? " · " + currentManagerName : "") + " 조회 중");
-        doSearch();
+        renderActiveView();
       }
     });
   });
@@ -520,6 +523,435 @@ function quantityRows(record) {
     if (rows.length) rows.push({ label: "합계", system: detail.AG, actual: detail.AI, diff: detail.AJ, total: true });
   }
   return rows;
+}
+
+function allHistoryRows() {
+  return quarterEntries().flatMap((q) => rowsForQuarter(q.id));
+}
+
+function storeKey(row) {
+  return norm(row?.store_group || row?.store);
+}
+
+function latestQuarterEntry() {
+  return quarterEntries().at(-1) || null;
+}
+
+function storePeriodText() {
+  const entries = quarterEntries();
+  if (!entries.length) return "전체 기간";
+  return formatQuarterLabel(entries[0].id, entries[0].label) + " ~ " + formatQuarterLabel(entries.at(-1).id, entries.at(-1).label);
+}
+
+function scoreForRecord(row, rec) {
+  const value = Number(rec?.ap);
+  return Number.isFinite(value) ? value : scoreOf(row);
+}
+
+function regionAverageForRow(row) {
+  const scores = rowsForQuarter(row._quarterId)
+    .filter((candidate) => candidate.dd === row.dd)
+    .map(scoreOf)
+    .filter((value) => value !== null);
+  return avg(scores);
+}
+
+function auditEventsForStore(history) {
+  const events = [];
+  history.forEach((row) => {
+    const records = Array.isArray(row.records) && row.records.length ? row.records : [null];
+    records.forEach((rec, index) => {
+      const detail = rec?.detail || {};
+      const categoryRows = quantityRows({ detail });
+      const categoryDiffs = {};
+      categoryRows.filter((item) => !item.total).forEach((item) => {
+        categoryDiffs[item.label] = quantityValue({ value: item.diff }, "value");
+      });
+      events.push({
+        key: [row._quarterId, row._rowIndex, index, recordDate(row, rec)].join("|"),
+        quarterId: row._quarterId,
+        quarterLabel: formatQuarterLabel(row._quarterId, row._quarterLabel),
+        date: recordDate(row, rec),
+        row,
+        rec,
+        score: scoreForRecord(row, rec),
+        regionAvg: regionAverageForRow(row),
+        managerKey: personKey(row),
+        managerName: row.name || "이름 없음",
+        managerEmp: row.emp || "",
+        note: noteInfo(rec) || noteInfo(row),
+        categoryDiffs,
+      });
+    });
+  });
+  return events.sort((a, b) => {
+    const rank = quarterRank(a.quarterId) - quarterRank(b.quarterId);
+    if (rank) return rank;
+    const date = String(a.date).localeCompare(String(b.date));
+    if (date) return date;
+    return String(a.key).localeCompare(String(b.key));
+  });
+}
+
+function buildStoreRows() {
+  const latest = latestQuarterEntry();
+  if (!latest || !currentDd) {
+    storeRows = [];
+    return;
+  }
+  const current = rowsForQuarter(latest.id).filter((row) => row.dd === currentDd);
+  const currentByStore = new Map();
+  current.forEach((row) => {
+    const key = storeKey(row);
+    if (!key) return;
+    if (!currentByStore.has(key)) currentByStore.set(key, []);
+    currentByStore.get(key).push(row);
+  });
+  const allRows = allHistoryRows();
+  storeRows = Array.from(currentByStore.entries()).map(([key, latestRows]) => {
+    const history = allRows.filter((row) => storeKey(row) === key);
+    const events = auditEventsForStore(history);
+    const latestEvent = events.at(-1) || null;
+    const managers = [];
+    events.forEach((event) => {
+      if (!managers.length || managers.at(-1).key !== event.managerKey) {
+        managers.push({ key: event.managerKey, name: event.managerName, emp: event.managerEmp });
+      }
+    });
+    const handoverCount = events.filter((event) => event.note?.type === "handover" || event.note?.type === "replacement").length;
+    return {
+      key,
+      store: latestRows[0]?.store_group || latestRows[0]?.store || history.at(-1)?.store || "",
+      latestRows,
+      history,
+      events,
+      latestEvent,
+      managers,
+      managerChanges: Math.max(0, managers.length - 1),
+      handoverCount,
+    };
+  }).sort((a, b) => a.store.localeCompare(b.store, "ko"));
+}
+
+function storeAxisLabel(event, index, events) {
+  const sameQuarter = events.filter((item) => item.quarterId === event.quarterId);
+  if (sameQuarter.length === 1) return event.quarterLabel.replace(/^20/, "");
+  const dateMatch = String(event.date).match(/(\d{4})[-.]?(\d{2})[-.]?(\d{2})/);
+  return event.quarterLabel.replace(/^20/, "") + (dateMatch ? "\n" + Number(dateMatch[2]) + "/" + Number(dateMatch[3]) : " #" + (sameQuarter.indexOf(event) + 1));
+}
+
+function managerSegments(events, xAt) {
+  const segments = [];
+  events.forEach((event, index) => {
+    const previous = segments.at(-1);
+    if (!previous || previous.key !== event.managerKey) {
+      segments.push({ key: event.managerKey, name: event.managerName, emp: event.managerEmp, start: index, end: index });
+    } else {
+      previous.end = index;
+    }
+  });
+  return segments.map((segment, index) => {
+    const left = segment.start === 0 ? xAt(0) - 22 : (xAt(segment.start - 1) + xAt(segment.start)) / 2;
+    const right = segment.end === events.length - 1 ? xAt(events.length - 1) + 22 : (xAt(segment.end) + xAt(segment.end + 1)) / 2;
+    return { ...segment, left, right, colorIndex: index % 4 };
+  });
+}
+
+function tenureSummaryGroups(events) {
+  const groups = [];
+  events.forEach((event) => {
+    const previous = groups.at(-1);
+    if (!previous || previous.key !== event.managerKey) {
+      groups.push({
+        key: event.managerKey,
+        name: event.managerName,
+        employees: [event.managerEmp].filter(Boolean),
+        events: [event],
+        colorIndex: groups.length % 4,
+      });
+      return;
+    }
+    previous.events.push(event);
+    if (event.managerEmp && !previous.employees.includes(event.managerEmp)) previous.employees.push(event.managerEmp);
+  });
+  return groups;
+}
+
+function tenureSummaryHtml(store) {
+  const groups = tenureSummaryGroups(store.events);
+  if (!groups.length) return '<div class="empty compact">표시할 점장 재임 이력이 없습니다.</div>';
+  const latestQuarter = latestQuarterEntry()?.id;
+  return '<div class="tenure-explanation-list">' + groups.map((group, index) => {
+    const first = group.events[0];
+    const last = group.events.at(-1);
+    const scores = group.events.map((event) => event.score).filter(Number.isFinite);
+    const regionScores = group.events.map((event) => event.regionAvg).filter(Number.isFinite);
+    const managerAvg = avg(scores);
+    const regionAvg = avg(regionScores);
+    const gap = managerAvg !== null && regionAvg !== null ? managerAvg - regionAvg : null;
+    const isCurrent = index === groups.length - 1 && last.quarterId === latestQuarter;
+    const period = first.quarterLabel + ' ~ ' + (isCurrent ? '현재' : last.quarterLabel);
+    const exactPeriod = [first.date, isCurrent ? '현재' : last.date].filter(Boolean).join(' ~ ');
+    const empText = group.employees.length ? ' · ' + group.employees.join(' → ') : '';
+    const description = first.quarterLabel + '부터 ' + (isCurrent ? '현재까지 ' : last.quarterLabel + ' 조사까지 ') + group.name + ' 점장이 담당' + (isCurrent ? ' 중입니다.' : '했습니다.') +
+      ' 총 ' + group.events.length + '회 조사 평균은 ' + fmt2(managerAvg) + '점이며, 같은 시기 지역 평균 대비 ' + fmtDelta(gap, '-') + '점입니다.';
+    const next = groups[index + 1];
+    let transition = '';
+    if (next) {
+      const noted = group.events.slice().reverse().find((event) => event.note) || next.events.find((event) => event.note);
+      const changeDate = noted?.date || next.events[0]?.date || '';
+      const changeLabel = noted?.note?.label || '점장 변경';
+      transition = '<div class="tenure-transition"><i></i><span>' + esc([changeDate, changeLabel, next.name + ' 점장으로 변경'].filter(Boolean).join(' · ')) + '</span></div>';
+    }
+    return '<article class="tenure-explanation tenure-summary-' + group.colorIndex + '">' +
+      '<div class="tenure-summary-mark"><span></span></div>' +
+      '<div class="tenure-summary-copy"><div class="tenure-summary-heading"><strong>' + esc(group.name + ' 점장') + '</strong><em>' + esc(period) + '</em></div>' +
+      '<small>' + esc(exactPeriod + empText) + '</small><p>' + esc(description) + '</p></div>' +
+    '</article>' + transition;
+  }).join('') + '</div>';
+}
+
+function scoreTrendSvg(store) {
+  const events = store.events.filter((event) => event.score !== null);
+  if (!events.length) return '<div class="empty compact">표시할 점수 이력이 없습니다.</div>';
+  const width = 1040, height = 330, left = 58, right = 26, top = 64, bottom = 58;
+  const plotW = width - left - right, plotH = height - top - bottom;
+  const allValues = events.flatMap((event) => [event.score, event.regionAvg]).filter(Number.isFinite);
+  let min = Math.floor(Math.min(...allValues) / 5) * 5;
+  let max = Math.ceil(Math.max(...allValues) / 5) * 5;
+  min = Math.min(min, 95); max = Math.max(max, 100);
+  if (max - min < 10) { min -= 5; max += 5; }
+  const xAt = (index) => events.length === 1 ? left + plotW / 2 : left + (plotW * index / (events.length - 1));
+  const yAt = (value) => top + (max - value) / (max - min) * plotH;
+  const segments = managerSegments(events, xAt);
+  const ticks = [];
+  for (let value = min; value <= max; value += 5) ticks.push(value);
+  const regionPoints = events.filter((event) => Number.isFinite(event.regionAvg)).map((event) => xAt(events.indexOf(event)) + "," + yAt(event.regionAvg)).join(" ");
+  const scorePoints = events.map((event, index) => xAt(index) + "," + yAt(event.score)).join(" ");
+  return '<svg class="store-chart-svg" viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="' + esc(store.store) + ' 종합점수 전체 흐름">' +
+    '<g class="tenure-bands">' + segments.map((segment) => '<rect class="tenure-band tenure-' + segment.colorIndex + '" x="' + segment.left + '" y="34" width="' + Math.max(0, segment.right - segment.left) + '" height="' + (plotH + 30) + '"><title>' + esc(segment.name + " · " + segment.emp) + '</title></rect><text class="tenure-label" x="' + (segment.left + 8) + '" y="51">' + esc(segment.name) + '</text>').join("") + '</g>' +
+    ticks.map((value) => '<line class="grid-line" x1="' + left + '" x2="' + (width - right) + '" y1="' + yAt(value) + '" y2="' + yAt(value) + '"></line><text class="axis-label y" x="' + (left - 12) + '" y="' + (yAt(value) + 4) + '">' + value + '</text>').join("") +
+    (regionPoints ? '<polyline class="region-average-line" points="' + regionPoints + '"></polyline>' : '') +
+    '<polyline class="store-score-line" points="' + scorePoints + '"></polyline>' +
+    events.map((event, index) => {
+      const noteMarker = event.note ? '<path class="handover-marker" d="M ' + (xAt(index) - 6) + ' ' + (yAt(event.score) - 13) + ' L ' + (xAt(index) + 6) + ' ' + (yAt(event.score) - 13) + ' L ' + xAt(index) + ' ' + (yAt(event.score) - 25) + ' Z"></path>' : '';
+      return '<g class="score-point"><circle cx="' + xAt(index) + '" cy="' + yAt(event.score) + '" r="6"><title>' + esc([event.quarterLabel, event.date, event.managerName + " · " + event.managerEmp, "점포 " + fmt2(event.score), "지역 평균 " + fmt2(event.regionAvg), event.note?.label || ""].filter(Boolean).join("\n")) + '</title></circle>' + noteMarker + '<text x="' + xAt(index) + '" y="' + (yAt(event.score) - 11) + '">' + fmt2(event.score) + '</text></g>';
+    }).join("") +
+    events.map((event, index) => '<text class="axis-label x" x="' + xAt(index) + '" y="' + (height - 28) + '">' + esc(storeAxisLabel(event, index, events).replace("\n", " · ")) + '</text>').join("") +
+    '<g class="chart-legend" transform="translate(' + (width - 245) + ',16)"><line class="store-score-line" x1="0" x2="28" y1="0" y2="0"></line><text x="36" y="4">점포 점수</text><line class="region-average-line" x1="116" x2="144" y1="0" y2="0"></line><text x="152" y="4">당시 지역 평균</text></g>' +
+  '</svg>';
+}
+
+function differenceTrendSvg(store) {
+  const events = store.events;
+  const categories = [
+    { key: "신발", cls: "shoes" }, { key: "용품", cls: "goods" },
+    { key: "의류", cls: "apparel" }, { key: "FNB", cls: "fnb" },
+  ].filter((category) => events.some((event) => Number.isFinite(event.categoryDiffs[category.key])));
+  if (!categories.length) return '<div class="empty compact">표시할 차이수량 이력이 없습니다.</div>';
+  const width = 1040, height = 380, left = 66, right = 26, top = 64, bottom = 78;
+  const plotW = width - left - right, plotH = height - top - bottom;
+  const values = events.flatMap((event) => categories.map((category) => event.categoryDiffs[category.key])).filter(Number.isFinite);
+  const absMax = Math.max(1, ...values.map((value) => Math.abs(value)));
+  const roundedMax = Math.ceil(absMax / 5) * 5;
+  const yAt = (value) => top + (roundedMax - value) / (roundedMax * 2) * plotH;
+  const zeroY = yAt(0);
+  const groupW = plotW / Math.max(1, events.length);
+  const xCenter = (index) => left + groupW * index + groupW / 2;
+  const barGap = 3;
+  const barW = Math.min(22, Math.max(5, (groupW - 16) / Math.max(1, categories.length) - barGap));
+  const segments = managerSegments(events, xCenter);
+  const ticks = [-roundedMax, -roundedMax / 2, 0, roundedMax / 2, roundedMax];
+  return '<svg class="store-chart-svg quantity-chart" viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="' + esc(store.store) + ' 카테고리별 차이수량 전체 흐름">' +
+    '<g class="tenure-bands">' + segments.map((segment) => '<rect class="tenure-band tenure-' + segment.colorIndex + '" x="' + Math.max(left, segment.left) + '" y="34" width="' + Math.max(0, Math.min(width - right, segment.right) - Math.max(left, segment.left)) + '" height="' + (plotH + 30) + '"><title>' + esc(segment.name + " · " + segment.emp) + '</title></rect><text class="tenure-label" x="' + (Math.max(left, segment.left) + 8) + '" y="51">' + esc(segment.name) + '</text>').join("") + '</g>' +
+    ticks.map((value) => '<line class="grid-line ' + (value === 0 ? "zero" : "") + '" x1="' + left + '" x2="' + (width - right) + '" y1="' + yAt(value) + '" y2="' + yAt(value) + '"></line><text class="axis-label y" x="' + (left - 12) + '" y="' + (yAt(value) + 4) + '">' + fmtQty(value) + '</text>').join("") +
+    events.map((event, eventIndex) => categories.map((category, categoryIndex) => {
+      const value = event.categoryDiffs[category.key];
+      if (!Number.isFinite(value)) return "";
+      const x = xCenter(eventIndex) + (categoryIndex - (categories.length - 1) / 2) * (barW + barGap) - barW / 2;
+      const y = value >= 0 ? yAt(value) : zeroY;
+      const h = Math.max(1, Math.abs(yAt(value) - zeroY));
+      return '<rect class="quantity-bar ' + category.cls + '" x="' + x + '" y="' + y + '" width="' + barW + '" height="' + h + '"><title>' + esc([event.quarterLabel, event.date, event.managerName + " · " + event.managerEmp, category.key + " " + fmtQtyDiff(value), "종합점수 " + fmt2(event.score), event.note?.label || ""].filter(Boolean).join("\n")) + '</title></rect>';
+    }).join("")).join("") +
+    events.map((event, index) => '<text class="axis-label x" x="' + xCenter(index) + '" y="' + (height - 40) + '">' + esc(storeAxisLabel(event, index, events).replace("\n", " · ")) + '</text><text class="score-under-bar" x="' + xCenter(index) + '" y="' + (height - 20) + '">' + fmt2(event.score) + '점</text>').join("") +
+    '<g class="category-legend" transform="translate(' + Math.max(left, width - 330) + ',16)">' + categories.map((category, index) => '<rect class="quantity-bar ' + category.cls + '" x="' + (index * 76) + '" y="-8" width="12" height="12"></rect><text x="' + (index * 76 + 18) + '" y="2">' + category.key + '</text>').join("") + '</g>' +
+  '</svg>';
+}
+
+function renderStoreList() {
+  const query = norm($("storeSearchInput")?.value || "");
+  const filtered = storeRows.filter((store) => !query || norm([store.store, ...store.managers.map((manager) => manager.name), ...store.managers.map((manager) => manager.emp)].join(" ")).includes(query));
+  if (!filtered.some((store) => store.key === selectedStoreKey)) selectedStoreKey = filtered[0]?.key || null;
+  $("storeResultHint").textContent = filtered.length + "개점";
+  $("storeTrendList").innerHTML = filtered.map((store) => {
+    const latest = store.latestEvent;
+    const delta = latest && Number.isFinite(latest.regionAvg) && Number.isFinite(latest.score) ? latest.score - latest.regionAvg : null;
+    return '<button class="store-row ' + (store.key === selectedStoreKey ? "active" : "") + '" type="button" data-store-key="' + esc(store.key) + '">' +
+      '<span><strong>' + esc(store.store) + '</strong><small>' + esc(latest?.managerName || "담당자 없음") + ' · 최근 ' + fmt2(latest?.score) + '</small></span>' +
+      '<em class="' + deltaClass(delta) + '">' + fmtDelta(delta, "-") + '</em>' +
+    '</button>';
+  }).join("") || '<div class="empty compact">검색 결과가 없습니다.</div>';
+  $("storeTrendList").querySelectorAll("[data-store-key]").forEach((button) => button.addEventListener("click", () => {
+    selectedStoreKey = button.dataset.storeKey;
+    renderStoreList();
+    renderStoreDetail();
+  }));
+}
+
+function renderStoreDetail() {
+  const store = storeRows.find((item) => item.key === selectedStoreKey);
+  if (!store) {
+    $("storeDetailRegion").textContent = currentDd || "선택 지역";
+    $("storeDetailTitle").textContent = "점포를 선택하세요";
+    $("storeFactChips").innerHTML = "";
+    $("storeDetailBody").innerHTML = '<div class="empty">위 목록에서 점포를 선택하세요.</div>';
+    return;
+  }
+  $("storeDetailRegion").textContent = currentDd + " · " + storePeriodText();
+  $("storeDetailTitle").textContent = store.store;
+  $("storeFactChips").innerHTML = '<span>조사 ' + store.events.length + '회</span><span>점장 교체 ' + store.managerChanges + '회</span><span>인수인계 ' + store.handoverCount + '회</span>';
+  $("storeDetailBody").innerHTML =
+    '<section class="store-chart-section"><div class="store-chart-title"><div><strong>종합점수 흐름</strong><span>점포 점수와 당시 지역 평균 · 점장 재임 구간</span></div></div><div class="store-chart-wrap">' + scoreTrendSvg(store) + '</div></section>' +
+    '<section class="store-chart-section tenure-summary-section"><div class="store-chart-title"><div><strong>점장 재임 이력</strong><span>위 그래프의 재임구간 색상과 동일하게 담당 기간을 설명합니다.</span></div></div>' + tenureSummaryHtml(store) + '</section>';
+}
+
+function renderStoreView() {
+  buildStoreRows();
+  if (!storeRows.some((store) => store.key === selectedStoreKey)) selectedStoreKey = storeRows[0]?.key || null;
+  renderStoreList();
+  renderStoreDetail();
+}
+
+function channelCode(row) {
+  const source = String(row?.store_group || row?.store || "").trim();
+  return (source.split(/\s+/)[0] || "기타").toUpperCase();
+}
+
+function channelQuarterRows() {
+  const storeQuarter = new Map();
+  allHistoryRows().forEach((row) => {
+    const store = storeKey(row);
+    if (!store) return;
+    const key = row._quarterId + "|" + store;
+    if (!storeQuarter.has(key)) {
+      storeQuarter.set(key, { quarterId: row._quarterId, channel: channelCode(row), scores: [] });
+    }
+    const records = Array.isArray(row.records) && row.records.length ? row.records : [null];
+    records.forEach((record) => {
+      const score = scoreForRecord(row, record);
+      if (Number.isFinite(score)) storeQuarter.get(key).scores.push(score);
+    });
+  });
+  const channelQuarter = new Map();
+  storeQuarter.forEach((item) => {
+    const storeScore = avg(item.scores);
+    if (!Number.isFinite(storeScore)) return;
+    const key = item.channel + "|" + item.quarterId;
+    if (!channelQuarter.has(key)) channelQuarter.set(key, { channel: item.channel, quarterId: item.quarterId, scores: [] });
+    channelQuarter.get(key).scores.push(storeScore);
+  });
+  return Array.from(channelQuarter.values()).map((item) => ({
+    channel: item.channel,
+    quarterId: item.quarterId,
+    score: avg(item.scores),
+    storeCount: item.scores.length,
+  }));
+}
+
+function renderChannelView() {
+  const entries = quarterEntries();
+  const rows = channelQuarterRows();
+  const preferred = ["GS", "GSA", "KM", "ST", "FD", "FH", "SE", "SP", "MS", "GST", "GSEA"];
+  const channels = Array.from(new Set(rows.map((row) => row.channel))).sort((a, b) => {
+    const ai = preferred.indexOf(a);
+    const bi = preferred.indexOf(b);
+    if (ai !== -1 || bi !== -1) return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    return a.localeCompare(b, "ko");
+  });
+  const latestQuarter = entries.at(-1)?.id;
+  const previousQuarter = entries.at(-2)?.id;
+  const latestRows = rows.filter((row) => row.quarterId === latestQuarter);
+  const previousMap = new Map(rows.filter((row) => row.quarterId === previousQuarter).map((row) => [row.channel, row]));
+  const leader = latestRows.slice().sort((a, b) => b.score - a.score)[0];
+  const improver = latestRows.map((row) => ({ ...row, delta: row.score - (previousMap.get(row.channel)?.score ?? row.score) })).sort((a, b) => b.delta - a.delta)[0];
+  const latestAverage = avg(latestRows.map((row) => row.score));
+  if ($("channelPeriodLabel")) $("channelPeriodLabel").textContent = storePeriodText();
+  if ($("channelSummary")) {
+    $("channelSummary").innerHTML = [
+      ["최근 전체 평균", fmt2(latestAverage), formatQuarterLabel(latestQuarter)],
+      ["최근 선두 채널", leader?.channel || "-", leader ? fmt2(leader.score) + "점 · " + leader.storeCount + "개점" : "-"],
+      ["상승폭 상위", improver?.channel || "-", improver ? fmtDelta(improver.delta) + "점 · 직전 분기 대비" : "-"],
+      ["분석 범위", channels.length + "개 채널", latestRows.reduce((sum, row) => sum + row.storeCount, 0) + "개점 반영"],
+    ].map(([label, value, meta]) => '<div class="channel-summary-card"><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong><small>' + esc(meta) + '</small></div>').join("");
+  }
+  const table = $("channelTable");
+  if (!table) return;
+  table.querySelector("thead").innerHTML = '<tr><th>채널</th>' + entries.map((entry) => '<th>' + esc(formatQuarterLabel(entry.id, entry.label)) + '</th>').join("") + '<th>최근 증감</th><th>최근 점포수</th></tr>';
+  table.querySelector("tbody").innerHTML = channels.map((channel) => {
+    const byQuarter = new Map(rows.filter((row) => row.channel === channel).map((row) => [row.quarterId, row]));
+    const latest = byQuarter.get(latestQuarter);
+    const previous = byQuarter.get(previousQuarter);
+    const delta = latest && previous ? latest.score - previous.score : null;
+    return '<tr><th><span class="channel-code">' + esc(channel) + '</span></th>' + entries.map((entry) => {
+      const item = byQuarter.get(entry.id);
+      return '<td>' + (item ? '<strong>' + fmt2(item.score) + '</strong><small>' + item.storeCount + '개점</small>' : '<span class="channel-empty">-</span>') + '</td>';
+    }).join("") + '<td><em class="' + deltaClass(delta) + '">' + fmtDelta(delta, "-") + '</em></td><td>' + (latest?.storeCount || 0) + '개점</td></tr>';
+  }).join("");
+}
+
+function updateMainViewCopy() {
+  const storeMode = mainView === "store";
+  const channelMode = mainView === "channel";
+  document.body.classList.toggle("store-mode", storeMode);
+  document.body.classList.toggle("channel-mode", channelMode);
+  $("quarterNav")?.classList.toggle("hidden", storeMode || channelMode);
+  $("storePeriodSummary")?.classList.toggle("hidden", !storeMode && !channelMode);
+  if ($("storePeriodLabel")) $("storePeriodLabel").textContent = storePeriodText();
+  const periodHint = $("storePeriodSummary")?.querySelector("span");
+  if (periodHint) periodHint.textContent = channelMode
+    ? "채널별 조회는 지역과 분기 선택에 관계없이 전국 전체 조사 이력을 표시합니다."
+    : "점포별 조회는 분기 선택과 관계없이 모든 조사 이력을 표시합니다.";
+  if ($("topSubtitle")) $("topSubtitle").textContent = channelMode
+    ? "전국 채널별 분기 평균과 반영 점포수를 참고자료로 확인합니다."
+    : storeMode
+      ? "점포별 점수와 점장 재임 이력을 전체 조사 기간 기준으로 조회합니다."
+      : "분기를 선택하면 해당 시점 기준 지역 점장 목록과 누적 평가 흐름을 조회합니다.";
+  $("contentGrid")?.classList.toggle("hidden", storeMode || channelMode || !currentDd);
+  $("storeFlowGrid")?.classList.toggle("hidden", !storeMode || !currentDd);
+  $("channelAnalysisGrid")?.classList.toggle("hidden", !channelMode || !currentDd);
+  document.querySelectorAll("[data-main-view]").forEach((button) => {
+    const active = button.dataset.mainView === mainView;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  if ($("noticeQuarterLabel")) $("noticeQuarterLabel").textContent = channelMode ? "전국 채널 통합 실적" : storeMode ? storePeriodText() + " 전체 이력" : currentQuarterLabel() + " 정기 재고조사";
+  const noticeLines = $("noticeQuarterLabel")?.closest(".notice-copy")?.querySelectorAll("span");
+  if (noticeLines?.length >= 2) {
+    noticeLines[0].lastChild.textContent = channelMode ? "을 지역 선택과 무관하게 표시합니다." : storeMode ? "을 점포 기준으로 연결해 표시합니다." : " 결과만 현재 조회 기준으로 사용합니다.";
+    noticeLines[1].textContent = channelMode ? "점포별 분기 평균을 먼저 산출한 뒤 채널 평균을 계산한 참고용 분석입니다." : storeMode ? "분기 선택과 관계없이 점수 흐름과 점장별 담당 기간을 조회합니다." : "선택 분기 이후 자료는 표시하지 않고, 2025년 이후 이력은 점장 흐름 확인용으로만 제공합니다.";
+  }
+}
+
+function setMainView(view) {
+  mainView = ["manager", "store", "channel"].includes(view) ? view : "manager";
+  updateMainViewCopy();
+  if (!currentDd) return;
+  const scope = mainView === "channel" ? "전국 채널 분석" : mainView === "store" ? storePeriodText() : currentQuarterLabel();
+  setStatus(scope + (isMaster ? " · 마스터" : currentManagerName ? " · " + currentManagerName : ""));
+  if (mainView === "store") renderStoreView();
+  else if (mainView === "channel") renderChannelView();
+  else doSearch();
+}
+
+function renderActiveView() {
+  updateMainViewCopy();
+  if (currentDd) {
+    const scope = mainView === "channel" ? "전국 채널 분석" : mainView === "store" ? storePeriodText() : currentQuarterLabel();
+    setStatus(scope + (isMaster ? " · 마스터 · " : " · ") + currentDd + (currentManagerName ? " · " + currentManagerName : "") + " 조회 중");
+  }
+  if (mainView === "store") renderStoreView();
+  else if (mainView === "channel") renderChannelView();
+  else doSearch();
 }
 
 function groupByPerson(rows) {
@@ -844,6 +1276,8 @@ function completeLogin(dd, managerName = "") {
   document.body.classList.remove("logged-out");
   selectedLoginDd = dd;
   selectedPersonKey = null;
+  selectedStoreKey = null;
+  mainView = "manager";
   detailTab = "summary";
   selectedQuantityKey = null;
   fillRegionsForQuarter();
@@ -855,9 +1289,9 @@ function completeLogin(dd, managerName = "") {
   if ($("legendPanel")) $("legendPanel").classList.add("hidden");
   if ($("summaryGrid")) $("summaryGrid").classList.remove("hidden");
   $("searchToolbar").classList.remove("hidden");
-  $("contentGrid").classList.remove("hidden");
+  if ($("viewModeNav")) $("viewModeNav").classList.remove("hidden");
   setStatus(currentQuarterLabel() + (isMaster ? " · 마스터 · " : " · ") + dd + (currentManagerName ? " · " + currentManagerName : "") + " 조회 중");
-  doSearch();
+  renderActiveView();
 }
 
 function submitEmployeeLogin() {
@@ -909,6 +1343,9 @@ function logout() {
   selectedPersonKey = null;
   detailTab = "summary";
   selectedQuantityKey = null;
+  selectedStoreKey = null;
+  storeRows = [];
+  mainView = "manager";
   if ($("modalCodeInput")) $("modalCodeInput").value = "";
   if ($("employeeLoginInput")) $("employeeLoginInput").value = "";
   if ($("regionPasswordInput")) $("regionPasswordInput").value = "";
@@ -920,6 +1357,13 @@ function logout() {
   if ($("summaryGrid")) $("summaryGrid").classList.add("hidden");
   $("searchToolbar").classList.add("hidden");
   $("contentGrid").classList.add("hidden");
+  $("storeFlowGrid")?.classList.add("hidden");
+  $("channelAnalysisGrid")?.classList.add("hidden");
+  $("viewModeNav")?.classList.add("hidden");
+  $("quarterNav")?.classList.remove("hidden");
+  $("storePeriodSummary")?.classList.add("hidden");
+  document.body.classList.remove("store-mode");
+  document.body.classList.remove("channel-mode");
   fillRegionsForQuarter();
   setStatus("로그인 대기");
 }
@@ -939,6 +1383,9 @@ function resetHome() {
   peopleRows = [];
   detailTab = "summary";
   selectedQuantityKey = null;
+  selectedStoreKey = null;
+  storeRows = [];
+  mainView = "manager";
   closeLoginModal();
   if ($("employeeLoginInput")) $("employeeLoginInput").value = "";
   if ($("regionPasswordInput")) $("regionPasswordInput").value = "";
@@ -953,6 +1400,13 @@ function resetHome() {
   if ($("summaryGrid")) $("summaryGrid").classList.add("hidden");
   $("searchToolbar").classList.add("hidden");
   $("contentGrid").classList.add("hidden");
+  $("storeFlowGrid")?.classList.add("hidden");
+  $("channelAnalysisGrid")?.classList.add("hidden");
+  $("viewModeNav")?.classList.add("hidden");
+  $("quarterNav")?.classList.remove("hidden");
+  $("storePeriodSummary")?.classList.add("hidden");
+  document.body.classList.remove("store-mode");
+  document.body.classList.remove("channel-mode");
   fillRegionsForQuarter();
   renderDetail(null);
   setStatus("로그인 대기");
@@ -969,6 +1423,8 @@ if ($("loginModalCancel")) $("loginModalCancel").addEventListener("click", close
 if ($("loginModal")) $("loginModal").addEventListener("click", (e) => { if (e.target === $("loginModal")) closeLoginModal(); });
 if ($("qInput")) $("qInput").addEventListener("input", doSearch);
 if ($("qInputInline")) $("qInputInline").addEventListener("input", doSearch);
+if ($("storeSearchInput")) $("storeSearchInput").addEventListener("input", () => { renderStoreList(); renderStoreDetail(); });
+document.querySelectorAll("[data-main-view]").forEach((button) => button.addEventListener("click", () => setMainView(button.dataset.mainView)));
 $("resetBtn").addEventListener("click", () => { getSearchInput().value = ""; doSearch(); });
 $("logoutBtn").addEventListener("click", logout);
 if ($("brandHome")) $("brandHome").addEventListener("click", resetHome);

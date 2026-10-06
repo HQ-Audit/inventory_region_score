@@ -6,7 +6,7 @@
   <title>정기 재고조사 | 지역별 관리자 점수 조회</title>
   <link rel="icon" type="image/svg+xml" href="favicon-black.svg?v=q3_inverse_logo_20260929_4" />
   <link rel="alternate icon" href="favicon-black.ico?v=q3_inverse_logo_20260929_4" />
-  <link rel="stylesheet" href="style.css?v=q3_login_title_20260929_4" />
+  <link rel="stylesheet" href="style.css?v=channel_preview_20261006_1" />
 </head>
 <body class="logged-out">
   <div class="app-shell">
@@ -14,8 +14,23 @@
       <button class="brand" id="brandHome" type="button" title="처음 화면">
         <div class="brand-mark"><img src="abc-mart-black.svg?v=q2_clean_intro_legend_20260701_1" alt="" /></div><div><strong>정기 재고조사</strong><span>지역별 관리자 점수 조회</span></div>
       </button>
-      <div class="side-label">분기</div>
-      <div class="side-list" id="quarterSide"></div>
+      <div class="view-mode-nav hidden" id="viewModeNav">
+        <div class="side-label">조회 기준</div>
+        <div class="side-view-switch" role="tablist" aria-label="조회 기준 전환">
+          <button class="active" type="button" data-main-view="manager" role="tab" aria-selected="true">점장별</button>
+          <button type="button" data-main-view="store" role="tab" aria-selected="false">점포별</button>
+          <button type="button" data-main-view="channel" role="tab" aria-selected="false">채널별</button>
+        </div>
+      </div>
+      <div id="quarterNav">
+        <div class="side-label">분기</div>
+        <div class="side-list" id="quarterSide"></div>
+      </div>
+      <div class="store-period hidden" id="storePeriodSummary">
+        <div class="side-label">조회 기간</div>
+        <strong id="storePeriodLabel">전체 기간</strong>
+        <span>점포별 조회는 분기 선택과 관계없이 모든 조사 이력을 표시합니다.</span>
+      </div>
       <div class="region-nav hidden" id="regionNav">
         <div class="side-label">접속 지역</div>
         <input class="region-filter hidden" id="regionFilter" type="search" placeholder="지역 검색" />
@@ -27,7 +42,7 @@
       <header class="topbar">
         <div>
           <h1>정기 재고조사 관리자 점수 조회</h1>
-          <p class="subtitle">분기를 선택하면 해당 시점 기준 지역 점장 목록과 누적 평가 흐름을 조회합니다.</p>
+          <p class="subtitle" id="topSubtitle">분기를 선택하면 해당 시점 기준 지역 점장 목록과 누적 평가 흐름을 조회합니다.</p>
         </div>
         <div class="top-actions">
           <div class="session" id="sessionBadge"><span class="dot"></span> 데이터 로드 중</div>
@@ -124,6 +139,50 @@
           </div>
         </aside>
       </section>
+
+      <section class="store-flow-view hidden" id="storeFlowGrid">
+        <div class="store-picker-card">
+          <div class="store-picker-head">
+            <div><strong>점포 선택</strong><span id="storeResultHint">0개점</span></div>
+            <input id="storeSearchInput" type="search" placeholder="점포명 · 점장명" />
+          </div>
+          <div class="store-trend-list" id="storeTrendList"></div>
+        </div>
+
+        <section class="store-detail-card">
+          <div class="store-detail-head">
+            <div><span id="storeDetailRegion">선택 지역</span><h2 id="storeDetailTitle">점포를 선택하세요</h2></div>
+            <div class="store-fact-chips" id="storeFactChips"></div>
+          </div>
+          <div class="store-detail-body" id="storeDetailBody">
+            <div class="empty">위 목록에서 점포를 선택하세요.</div>
+          </div>
+        </section>
+      </section>
+
+      <section class="channel-analysis-view hidden" id="channelAnalysisGrid">
+        <div class="channel-analysis-head">
+          <div>
+            <span>참고자료 · 전체 지역 통합</span>
+            <h2>채널별 분기 실적 분석</h2>
+            <p>점포별 분기 점수를 먼저 산출한 뒤 채널 평균을 계산해, 인수인계 등 복수 기록이 있는 점포가 중복 반영되지 않도록 했습니다.</p>
+          </div>
+          <div class="channel-period" id="channelPeriodLabel">전체 기간</div>
+        </div>
+        <div class="channel-summary" id="channelSummary"></div>
+        <div class="channel-table-card">
+          <div class="channel-table-head">
+            <div><strong>채널 실적표</strong><span>점수 · 직전 분기 대비 · 반영 점포수</span></div>
+            <span>지역 선택과 무관한 전국 채널 평균</span>
+          </div>
+          <div class="channel-table-wrap">
+            <table class="channel-table" id="channelTable">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
     </main>
   </div>
 
@@ -146,6 +205,6 @@
     </section>
   </div>
 
-  <script src="app.js?v=q3_employee_alias_fix_20260929_8"></script>
+  <script src="app.js?v=channel_preview_20261006_1"></script>
 </body>
 </html>

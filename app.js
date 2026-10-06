@@ -1,4 +1,4 @@
-const DATA_URL = "webdata.bin?v=20260929_kim_jaemin_1";
+const DATA_URL = "webdata.bin?v=20261006_store_semantics_1";
 const MAGIC = new TextEncoder().encode("SCOREENC\n");
 const SALT_LEN = 16;
 const NONCE_LEN = 12;
@@ -533,6 +533,26 @@ function storeKey(row) {
   return norm(row?.store_group || row?.store);
 }
 
+function storeValueKey(value) {
+  return norm(value);
+}
+
+function assignedStoreForRecord(row, rec) {
+  return String(rec?.assigned_store || row?.assigned_store || row?.store_group || row?.store || "").trim();
+}
+
+function auditStoreForRecord(row, rec) {
+  return String(rec?.audit_store || row?.audit_store || row?.store_group || row?.store || "").trim();
+}
+
+function assignedDdForRecord(row, rec) {
+  return String(rec?.assigned_dd || row?.dd || "").trim();
+}
+
+function auditDdForRecord(row, rec) {
+  return String(rec?.audit_dd || row?.dd || "").trim();
+}
+
 function latestQuarterEntry() {
   return quarterEntries().at(-1) || null;
 }
@@ -548,25 +568,94 @@ function scoreForRecord(row, rec) {
   return Number.isFinite(value) ? value : scoreOf(row);
 }
 
-function regionAverageForRow(row) {
-  const scores = rowsForQuarter(row._quarterId)
-    .filter((candidate) => candidate.dd === row.dd)
-    .map(scoreOf)
-    .filter((value) => value !== null);
-  return avg(scores);
+const auditRegionAverageCache = new Map();
+
+function regionAverageForAuditRecord(row, rec) {
+  const dd = auditDdForRecord(row, rec);
+  const cacheKey = row._quarterId + "|" + dd;
+  if (auditRegionAverageCache.has(cacheKey)) return auditRegionAverageCache.get(cacheKey);
+  const scores = [];
+  rowsForQuarter(row._quarterId).forEach((candidate) => {
+    (Array.isArray(candidate.records) ? candidate.records : []).forEach((candidateRecord) => {
+      if (auditDdForRecord(candidate, candidateRecord) !== dd) return;
+      const score = scoreForRecord(candidate, candidateRecord);
+      if (Number.isFinite(score)) scores.push(score);
+    });
+  });
+  const value = avg(scores);
+  auditRegionAverageCache.set(cacheKey, value);
+  return value;
 }
 
-function auditEventsForStore(history) {
+function dateDistanceDays(a, b) {
+  const left = Date.parse(String(a || ""));
+  const right = Date.parse(String(b || ""));
+  return Number.isFinite(left) && Number.isFinite(right) ? Math.abs(left - right) / 86400000 : Infinity;
+}
+
+function previousDate(dateText) {
+  const parsed = Date.parse(String(dateText || ""));
+  if (!Number.isFinite(parsed)) return dateText || "";
+  return new Date(parsed - 86400000).toISOString().slice(0, 10);
+}
+
+function orderHandoverEvents(events) {
+  const copied = events.map((event) => ({ ...event }));
+  const byQuarter = new Map();
+  copied.forEach((event) => {
+    if (!byQuarter.has(event.quarterId)) byQuarter.set(event.quarterId, []);
+    byQuarter.get(event.quarterId).push(event);
+  });
+  byQuarter.forEach((quarterEvents) => {
+    const replacements = quarterEvents.filter((event) => event.note?.type === "replacement");
+    const handovers = quarterEvents.filter((event) => event.note?.type === "handover");
+    replacements.forEach((outgoing) => {
+      const incoming = handovers
+        .filter((event) => event.managerKey !== outgoing.managerKey && !event._transitionPair)
+        .map((event) => ({ event, gap: dateDistanceDays(event.date, outgoing.date) }))
+        .filter((item) => item.gap <= 7)
+        .sort((a, b) => a.gap - b.gap)[0]?.event;
+      if (!incoming) return;
+      const transitionDate = [outgoing.date, incoming.date].filter(Boolean).sort().at(-1) || outgoing.date || incoming.date;
+      const pairId = outgoing.quarterId + "|" + outgoing.managerKey + "|" + incoming.managerKey;
+      outgoing._transitionPair = pairId;
+      outgoing._transitionRole = "outgoing";
+      outgoing._transitionDate = transitionDate;
+      incoming._transitionPair = pairId;
+      incoming._transitionRole = "incoming";
+      incoming._transitionDate = transitionDate;
+    });
+  });
+  return copied.sort((a, b) => {
+    const rank = quarterRank(a.quarterId) - quarterRank(b.quarterId);
+    if (rank) return rank;
+    if (a._transitionPair && a._transitionPair === b._transitionPair) {
+      return a._transitionRole === "outgoing" ? -1 : 1;
+    }
+    const date = String(a._transitionDate || a.date).localeCompare(String(b._transitionDate || b.date));
+    if (date) return date;
+    return String(a.key).localeCompare(String(b.key));
+  });
+}
+
+function auditEventsForStore(targetStoreKey) {
   const events = [];
-  history.forEach((row) => {
-    const records = Array.isArray(row.records) && row.records.length ? row.records : [null];
+  allHistoryRows().forEach((row) => {
+    const records = Array.isArray(row.records) ? row.records : [];
     records.forEach((rec, index) => {
+      const assignedStore = assignedStoreForRecord(row, rec);
+      const auditStore = auditStoreForRecord(row, rec);
+      const assignmentMatch = storeValueKey(assignedStore) === targetStoreKey;
+      const auditMatch = storeValueKey(auditStore) === targetStoreKey;
+      if (!assignmentMatch && !auditMatch) return;
       const detail = rec?.detail || {};
       const categoryRows = quantityRows({ detail });
       const categoryDiffs = {};
-      categoryRows.filter((item) => !item.total).forEach((item) => {
-        categoryDiffs[item.label] = quantityValue({ value: item.diff }, "value");
-      });
+      if (auditMatch) {
+        categoryRows.filter((item) => !item.total).forEach((item) => {
+          categoryDiffs[item.label] = quantityValue({ value: item.diff }, "value");
+        });
+      }
       events.push({
         key: [row._quarterId, row._rowIndex, index, recordDate(row, rec)].join("|"),
         quarterId: row._quarterId,
@@ -574,23 +663,29 @@ function auditEventsForStore(history) {
         date: recordDate(row, rec),
         row,
         rec,
-        score: scoreForRecord(row, rec),
-        regionAvg: regionAverageForRow(row),
+        score: auditMatch ? scoreForRecord(row, rec) : null,
+        regionAvg: auditMatch ? regionAverageForAuditRecord(row, rec) : null,
         managerKey: personKey(row),
         managerName: row.name || "이름 없음",
         managerEmp: row.emp || "",
         note: noteInfo(rec) || noteInfo(row),
         categoryDiffs,
+        assignedStore,
+        auditStore,
+        assignedDd: assignedDdForRecord(row, rec),
+        auditDd: auditDdForRecord(row, rec),
+        relation: assignmentMatch && auditMatch ? "both" : assignmentMatch ? "assignment" : "audit",
       });
     });
   });
-  return events.sort((a, b) => {
+  const chronological = events.sort((a, b) => {
     const rank = quarterRank(a.quarterId) - quarterRank(b.quarterId);
     if (rank) return rank;
     const date = String(a.date).localeCompare(String(b.date));
     if (date) return date;
     return String(a.key).localeCompare(String(b.key));
   });
+  return orderHandoverEvents(chronological);
 }
 
 function buildStoreRows() {
@@ -610,8 +705,10 @@ function buildStoreRows() {
   const allRows = allHistoryRows();
   storeRows = Array.from(currentByStore.entries()).map(([key, latestRows]) => {
     const history = allRows.filter((row) => storeKey(row) === key);
-    const events = auditEventsForStore(history);
-    const latestEvent = events.at(-1) || null;
+    const events = auditEventsForStore(key);
+    const scoreEvents = events.filter((event) => Number.isFinite(event.score));
+    const latestEvent = scoreEvents.at(-1) || null;
+    const currentEvent = events.at(-1) || latestEvent;
     const managers = [];
     events.forEach((event) => {
       if (!managers.length || managers.at(-1).key !== event.managerKey) {
@@ -625,7 +722,9 @@ function buildStoreRows() {
       latestRows,
       history,
       events,
+      scoreEvents,
       latestEvent,
+      currentEvent,
       managers,
       managerChanges: Math.max(0, managers.length - 1),
       handoverCount,
@@ -636,7 +735,7 @@ function buildStoreRows() {
 function storeAxisLabel(event, index, events) {
   const sameQuarter = events.filter((item) => item.quarterId === event.quarterId);
   if (sameQuarter.length === 1) return event.quarterLabel.replace(/^20/, "");
-  const dateMatch = String(event.date).match(/(\d{4})[-.]?(\d{2})[-.]?(\d{2})/);
+  const dateMatch = String(event._transitionDate || event.date).match(/(\d{4})[-.]?(\d{2})[-.]?(\d{2})/);
   return event.quarterLabel.replace(/^20/, "") + (dateMatch ? "\n" + Number(dateMatch[2]) + "/" + Number(dateMatch[3]) : " #" + (sameQuarter.indexOf(event) + 1));
 }
 
@@ -679,29 +778,63 @@ function tenureSummaryGroups(events) {
 
 function tenureSummaryHtml(store) {
   const groups = tenureSummaryGroups(store.events);
-  if (!groups.length) return '<div class="empty compact">표시할 점장 재임 이력이 없습니다.</div>';
+  if (!groups.length) return '<div class="empty compact">표시할 점장 근속 이력이 없습니다.</div>';
   const latestQuarter = latestQuarterEntry()?.id;
   return '<div class="tenure-explanation-list">' + groups.map((group, index) => {
     const first = group.events[0];
     const last = group.events.at(-1);
-    const scores = group.events.map((event) => event.score).filter(Number.isFinite);
-    const regionScores = group.events.map((event) => event.regionAvg).filter(Number.isFinite);
+    const scoreEvents = group.events.filter((event) => Number.isFinite(event.score));
+    const scores = scoreEvents.map((event) => event.score);
+    const regionScores = scoreEvents.map((event) => event.regionAvg).filter(Number.isFinite);
     const managerAvg = avg(scores);
     const regionAvg = avg(regionScores);
     const gap = managerAvg !== null && regionAvg !== null ? managerAvg - regionAvg : null;
     const isCurrent = index === groups.length - 1 && last.quarterId === latestQuarter;
-    const period = first.quarterLabel + ' ~ ' + (isCurrent ? '현재' : last.quarterLabel);
-    const exactPeriod = [first.date, isCurrent ? '현재' : last.date].filter(Boolean).join(' ~ ');
-    const empText = group.employees.length ? ' · ' + group.employees.join(' → ') : '';
-    const description = first.quarterLabel + '부터 ' + (isCurrent ? '현재까지 ' : last.quarterLabel + ' 조사까지 ') + group.name + ' 점장이 담당' + (isCurrent ? ' 중입니다.' : '했습니다.') +
-      ' 총 ' + group.events.length + '회 조사 평균은 ' + fmt2(managerAvg) + '점이며, 같은 시기 지역 평균 대비 ' + fmtDelta(gap, '-') + '점입니다.';
+    const previous = groups[index - 1];
     const next = groups[index + 1];
+    const startBoundary = first._transitionRole === 'incoming'
+      ? first._transitionDate
+      : previous
+        ? (first._transitionDate || first.date)
+        : '';
+    const nextFirst = next?.events?.[0];
+    const endBoundary = nextFirst
+      ? (last._transitionRole === 'outgoing' ? last._transitionDate : previousDate(nextFirst._transitionDate || nextFirst.date))
+      : '';
+    const period = index === 0 && first._transitionRole === 'outgoing'
+      ? first.quarterLabel + '까지'
+      : first.quarterLabel + ' ~ ' + (isCurrent ? '현재' : last.quarterLabel);
+    const exactPeriod = index === 0 && first._transitionRole === 'outgoing'
+      ? '~ ' + (last._transitionDate || last.date)
+      : [startBoundary || first.date, isCurrent ? '현재' : (endBoundary || last.date)].filter(Boolean).join(' ~ ');
+    const empText = group.employees.length ? ' · ' + group.employees.join(' → ') : '';
+    const responsibilityText = index === 0 && first._transitionRole === 'outgoing'
+      ? (last._transitionDate || last.date) + ' 인수인계까지 담당했습니다.'
+      : (startBoundary || first.date) + '부터 ' + (isCurrent ? '현재까지 담당 중입니다.' : (endBoundary || last.date) + '까지 담당한 것으로 연결됩니다.');
+    let comparisonDescription = '';
+    const firstScoreEvent = scoreEvents[0];
+    if (previous && firstScoreEvent) {
+      const previousScoreEvents = previous.events.filter((event) => Number.isFinite(event.score));
+      const previousManagerAvg = avg(previousScoreEvents.map((event) => event.score));
+      const firstScoreIndex = group.events.indexOf(firstScoreEvent);
+      const transitionEvents = previous.events.concat(group.events.slice(0, firstScoreIndex + 1));
+      const isHandover = transitionEvents.some((event) => event.note?.type === 'handover' || event.note?.type === 'replacement');
+      if (isHandover && previousManagerAvg !== null) {
+        const change = firstScoreEvent.score - previousManagerAvg;
+        const direction = Math.abs(change) < 0.005 ? '동일합니다.' : change > 0 ? fmt2(Math.abs(change)) + '점 높습니다.' : fmt2(Math.abs(change)) + '점 낮습니다.';
+        comparisonDescription = ' 인수인계 전후 비교: 변경 전 ' + previous.name + ' 점장 평균 ' + fmt2(previousManagerAvg) + '점 대비 ' + group.name + ' 점장 첫 조사 ' + fmt2(firstScoreEvent.score) + '점으로, ' + direction;
+      }
+    }
+    const scoreDescription = scoreEvents.length
+      ? ' 총 ' + scoreEvents.length + '회 조사 평균은 ' + fmt2(managerAvg) + '점이며, 같은 시기 지역 평균 대비 ' + fmtDelta(gap, '-') + '점입니다.' + comparisonDescription
+      : ' 해당 담당 기간에 이 점포에서 실시한 조사 기록은 없습니다.';
+    const description = responsibilityText + scoreDescription;
     let transition = '';
     if (next) {
-      const noted = group.events.slice().reverse().find((event) => event.note) || next.events.find((event) => event.note);
-      const changeDate = noted?.date || next.events[0]?.date || '';
-      const changeLabel = noted?.note?.label || '점장 변경';
-      transition = '<div class="tenure-transition"><i></i><span>' + esc([changeDate, changeLabel, next.name + ' 점장으로 변경'].filter(Boolean).join(' · ')) + '</span></div>';
+      const paired = last._transitionPair && last._transitionPair === nextFirst?._transitionPair;
+      const changeDate = paired ? last._transitionDate : (nextFirst?._transitionDate || nextFirst?.date || '');
+      const changeLabel = paired ? '인수인계' : '담당 변경';
+      transition = '<div class="tenure-transition"><i></i><span>' + esc([changeDate, changeLabel, next.name + ' 점장 인수'].filter(Boolean).join(' · ')) + '</span></div>';
     }
     return '<article class="tenure-explanation tenure-summary-' + group.colorIndex + '">' +
       '<div class="tenure-summary-mark"><span></span></div>' +
@@ -712,11 +845,12 @@ function tenureSummaryHtml(store) {
 }
 
 function scoreTrendSvg(store) {
-  const events = store.events.filter((event) => event.score !== null);
-  if (!events.length) return '<div class="empty compact">표시할 점수 이력이 없습니다.</div>';
+  const events = store.events;
+  const scoreEvents = events.filter((event) => Number.isFinite(event.score));
+  if (!scoreEvents.length) return '<div class="empty compact">표시할 점수 이력이 없습니다.</div>';
   const width = 1040, height = 330, left = 58, right = 26, top = 64, bottom = 58;
   const plotW = width - left - right, plotH = height - top - bottom;
-  const allValues = events.flatMap((event) => [event.score, event.regionAvg]).filter(Number.isFinite);
+  const allValues = scoreEvents.flatMap((event) => [event.score, event.regionAvg]).filter(Number.isFinite);
   let min = Math.floor(Math.min(...allValues) / 5) * 5;
   let max = Math.ceil(Math.max(...allValues) / 5) * 5;
   min = Math.min(min, 95); max = Math.max(max, 100);
@@ -726,14 +860,15 @@ function scoreTrendSvg(store) {
   const segments = managerSegments(events, xAt);
   const ticks = [];
   for (let value = min; value <= max; value += 5) ticks.push(value);
-  const regionPoints = events.filter((event) => Number.isFinite(event.regionAvg)).map((event) => xAt(events.indexOf(event)) + "," + yAt(event.regionAvg)).join(" ");
-  const scorePoints = events.map((event, index) => xAt(index) + "," + yAt(event.score)).join(" ");
+  const regionPoints = scoreEvents.filter((event) => Number.isFinite(event.regionAvg)).map((event) => xAt(events.indexOf(event)) + "," + yAt(event.regionAvg)).join(" ");
+  const scorePoints = scoreEvents.map((event) => xAt(events.indexOf(event)) + "," + yAt(event.score)).join(" ");
   return '<svg class="store-chart-svg" viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="' + esc(store.store) + ' 종합점수 전체 흐름">' +
     '<g class="tenure-bands">' + segments.map((segment) => '<rect class="tenure-band tenure-' + segment.colorIndex + '" x="' + segment.left + '" y="34" width="' + Math.max(0, segment.right - segment.left) + '" height="' + (plotH + 30) + '"><title>' + esc(segment.name + " · " + segment.emp) + '</title></rect><text class="tenure-label" x="' + (segment.left + 8) + '" y="51">' + esc(segment.name) + '</text>').join("") + '</g>' +
     ticks.map((value) => '<line class="grid-line" x1="' + left + '" x2="' + (width - right) + '" y1="' + yAt(value) + '" y2="' + yAt(value) + '"></line><text class="axis-label y" x="' + (left - 12) + '" y="' + (yAt(value) + 4) + '">' + value + '</text>').join("") +
     (regionPoints ? '<polyline class="region-average-line" points="' + regionPoints + '"></polyline>' : '') +
     '<polyline class="store-score-line" points="' + scorePoints + '"></polyline>' +
-    events.map((event, index) => {
+    scoreEvents.map((event) => {
+      const index = events.indexOf(event);
       const noteMarker = event.note ? '<path class="handover-marker" d="M ' + (xAt(index) - 6) + ' ' + (yAt(event.score) - 13) + ' L ' + (xAt(index) + 6) + ' ' + (yAt(event.score) - 13) + ' L ' + xAt(index) + ' ' + (yAt(event.score) - 25) + ' Z"></path>' : '';
       return '<g class="score-point"><circle cx="' + xAt(index) + '" cy="' + yAt(event.score) + '" r="6"><title>' + esc([event.quarterLabel, event.date, event.managerName + " · " + event.managerEmp, "점포 " + fmt2(event.score), "지역 평균 " + fmt2(event.regionAvg), event.note?.label || ""].filter(Boolean).join("\n")) + '</title></circle>' + noteMarker + '<text x="' + xAt(index) + '" y="' + (yAt(event.score) - 11) + '">' + fmt2(event.score) + '</text></g>';
     }).join("") +
@@ -785,9 +920,10 @@ function renderStoreList() {
   $("storeResultHint").textContent = filtered.length + "개점";
   $("storeTrendList").innerHTML = filtered.map((store) => {
     const latest = store.latestEvent;
+    const current = store.currentEvent || latest;
     const delta = latest && Number.isFinite(latest.regionAvg) && Number.isFinite(latest.score) ? latest.score - latest.regionAvg : null;
     return '<button class="store-row ' + (store.key === selectedStoreKey ? "active" : "") + '" type="button" data-store-key="' + esc(store.key) + '">' +
-      '<span><strong>' + esc(store.store) + '</strong><small>' + esc(latest?.managerName || "담당자 없음") + ' · 최근 ' + fmt2(latest?.score) + '</small></span>' +
+      '<span><strong>' + esc(store.store) + '</strong><small>' + esc(current?.managerName || "담당자 없음") + ' · 최근 ' + fmt2(latest?.score) + '</small></span>' +
       '<em class="' + deltaClass(delta) + '">' + fmtDelta(delta, "-") + '</em>' +
     '</button>';
   }).join("") || '<div class="empty compact">검색 결과가 없습니다.</div>';
@@ -809,10 +945,10 @@ function renderStoreDetail() {
   }
   $("storeDetailRegion").textContent = currentDd + " · " + storePeriodText();
   $("storeDetailTitle").textContent = store.store;
-  $("storeFactChips").innerHTML = '<span>조사 ' + store.events.length + '회</span><span>점장 교체 ' + store.managerChanges + '회</span><span>인수인계 ' + store.handoverCount + '회</span>';
+  $("storeFactChips").innerHTML = '<span>조사 ' + store.scoreEvents.length + '회</span><span>점장 교체 ' + store.managerChanges + '회</span><span>인수인계 ' + store.handoverCount + '회</span>';
   $("storeDetailBody").innerHTML =
-    '<section class="store-chart-section"><div class="store-chart-title"><div><strong>종합점수 흐름</strong><span>점포 점수와 당시 지역 평균 · 점장 재임 구간</span></div></div><div class="store-chart-wrap">' + scoreTrendSvg(store) + '</div></section>' +
-    '<section class="store-chart-section tenure-summary-section"><div class="store-chart-title"><div><strong>점장 재임 이력</strong><span>위 그래프의 재임구간 색상과 동일하게 담당 기간을 설명합니다.</span></div></div>' + tenureSummaryHtml(store) + '</section>';
+    '<section class="store-chart-section"><div class="store-chart-title"><div><strong>종합점수 흐름</strong><span>점포 점수와 당시 지역 평균 · 점장 근속 구간</span></div></div><div class="store-chart-wrap">' + scoreTrendSvg(store) + '</div></section>' +
+    '<section class="store-chart-section tenure-summary-section"><div class="store-chart-title"><div><strong>점장 근속 이력</strong><span>위 그래프의 근속 구간 색상과 동일하게 담당 기간을 설명합니다.</span></div></div>' + tenureSummaryHtml(store) + '</section>';
 }
 
 function renderStoreView() {
@@ -914,7 +1050,7 @@ function updateMainViewCopy() {
   if ($("topSubtitle")) $("topSubtitle").textContent = channelMode
     ? "전국 채널별 분기 평균과 반영 점포수를 참고자료로 확인합니다."
     : storeMode
-      ? "점포별 점수와 점장 재임 이력을 전체 조사 기간 기준으로 조회합니다."
+      ? "점포별 점수와 점장 근속 이력을 전체 조사 기간 기준으로 조회합니다."
       : "분기를 선택하면 해당 시점 기준 지역 점장 목록과 누적 평가 흐름을 조회합니다.";
   $("contentGrid")?.classList.toggle("hidden", storeMode || channelMode || !currentDd);
   $("storeFlowGrid")?.classList.toggle("hidden", !storeMode || !currentDd);

@@ -819,10 +819,11 @@ function tenureSummaryHtml(store) {
       const firstScoreIndex = group.events.indexOf(firstScoreEvent);
       const transitionEvents = previous.events.concat(group.events.slice(0, firstScoreIndex + 1));
       const isHandover = transitionEvents.some((event) => event.note?.type === 'handover' || event.note?.type === 'replacement');
-      if (isHandover && previousManagerAvg !== null) {
+      if (previousManagerAvg !== null) {
         const change = firstScoreEvent.score - previousManagerAvg;
         const direction = Math.abs(change) < 0.005 ? '동일합니다.' : change > 0 ? fmt2(Math.abs(change)) + '점 높습니다.' : fmt2(Math.abs(change)) + '점 낮습니다.';
-        comparisonDescription = ' 인수인계 전후 비교: 변경 전 ' + previous.name + ' 점장 평균 ' + fmt2(previousManagerAvg) + '점 대비 ' + group.name + ' 점장 첫 조사 ' + fmt2(firstScoreEvent.score) + '점으로, ' + direction;
+        const comparisonLabel = isHandover ? '인수인계 전후 비교' : '전 점장 비교';
+        comparisonDescription = '\n' + comparisonLabel + ': 변경 전 ' + previous.name + ' 점장 평균 ' + fmt2(previousManagerAvg) + '점 대비 ' + group.name + ' 점장 첫 조사 ' + fmt2(firstScoreEvent.score) + '점으로, ' + direction;
       }
     }
     const scoreDescription = scoreEvents.length

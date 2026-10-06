@@ -1152,7 +1152,7 @@ tbody tr:hover { background: rgba(232,242,255,.70); }
 .tenure-summary-heading strong { color: #111827; font-size: 15px; }
 .tenure-summary-heading em { color: #1d4ed8; font-size: 12px; font-style: normal; font-weight: 800; white-space: nowrap; }
 .tenure-summary-copy small { display: block; margin-top: 5px; color: #667085; font-size: 11px; }
-.tenure-summary-copy p { margin: 9px 0 0; color: #344054; font-size: 13px; line-height: 1.58; }
+.tenure-summary-copy p { margin: 9px 0 0; color: #344054; font-size: 13px; line-height: 1.58; white-space: pre-line; }
 .tenure-transition { display: grid; grid-template-columns: 13px minmax(0,1fr); gap: 12px; align-items: center; min-height: 40px; padding: 4px 15px; }
 .tenure-transition i { position: relative; justify-self: center; width: 2px; height: 32px; background: rgba(100,116,139,.25); }
 .tenure-transition i::after { content: ""; position: absolute; left: 50%; bottom: -1px; width: 7px; height: 7px; border-right: 2px solid #64748b; border-bottom: 2px solid #64748b; transform: translateX(-50%) rotate(45deg); }

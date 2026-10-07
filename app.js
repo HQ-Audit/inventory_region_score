@@ -1,4 +1,4 @@
-const DATA_URL = "webdata.bin?v=20261006_store_semantics_1";
+const DATA_URL = "webdata.bin?v=20261007_official_handovers_1";
 const MAGIC = new TextEncoder().encode("SCOREENC\n");
 const SALT_LEN = 16;
 const NONCE_LEN = 12;
@@ -599,8 +599,46 @@ function previousDate(dateText) {
   return new Date(parsed - 86400000).toISOString().slice(0, 10);
 }
 
+function officialHandoversForStore(targetStoreKey) {
+  const transitions = Array.isArray(dataObj?.officialHandovers) ? dataObj.officialHandovers : [];
+  return transitions
+    .filter((item) => storeValueKey(item.store) === targetStoreKey)
+    .slice()
+    .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
+}
+
+function officialTransitionBetween(transitions, outgoingName, incomingName) {
+  return (transitions || []).find((item) =>
+    norm(item.outgoing) === norm(outgoingName) && norm(item.incoming) === norm(incomingName)
+  ) || null;
+}
+
+function officialTransitionForIncomingEvent(event, eventIndex, events, transitions) {
+  if (!Number.isFinite(event?.score)) return null;
+  for (const transition of transitions || []) {
+    if (norm(transition.incoming) !== norm(event.managerName)) continue;
+    let outgoingIndex = -1;
+    for (let index = 0; index < eventIndex; index += 1) {
+      if (norm(events[index].managerName) === norm(transition.outgoing)) outgoingIndex = index;
+    }
+    if (outgoingIndex < 0) continue;
+    const firstIncomingScoreIndex = events.findIndex((candidate, index) =>
+      index > outgoingIndex && norm(candidate.managerName) === norm(transition.incoming) && Number.isFinite(candidate.score)
+    );
+    if (firstIncomingScoreIndex === eventIndex) return transition;
+  }
+  return null;
+}
+
 function orderHandoverEvents(events) {
   const copied = events.map((event) => ({ ...event }));
+  const baseline = copied.slice().sort((a, b) => {
+    const rank = quarterRank(a.quarterId) - quarterRank(b.quarterId);
+    if (rank) return rank;
+    const date = String(a.date).localeCompare(String(b.date));
+    if (date) return date;
+    return String(a.key).localeCompare(String(b.key));
+  });
   const byQuarter = new Map();
   copied.forEach((event) => {
     if (!byQuarter.has(event.quarterId)) byQuarter.set(event.quarterId, []);
@@ -625,6 +663,50 @@ function orderHandoverEvents(events) {
       incoming._transitionRole = "incoming";
       incoming._transitionDate = transitionDate;
     });
+
+    // 일부 원천은 인계자와 인수자 양쪽 기록이 모두 '인수인계'로 저장된다.
+    // 단순 날짜순으로 두면 인수 기록이 하루 빠른 경우 점장이 왕복한 것처럼 보이므로,
+    // 직전·직후 분기의 실제 점장 연속성을 이용해 인계자와 인수자를 판별한다.
+    const remainingHandovers = handovers.filter((event) => !event._transitionPair);
+    const candidates = [];
+    for (let leftIndex = 0; leftIndex < remainingHandovers.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < remainingHandovers.length; rightIndex += 1) {
+        const left = remainingHandovers[leftIndex];
+        const right = remainingHandovers[rightIndex];
+        if (left.managerKey === right.managerKey) continue;
+        const gap = dateDistanceDays(left.date, right.date);
+        if (gap > 7) continue;
+        const pairKeys = new Set([left.key, right.key]);
+        const firstPosition = Math.min(baseline.indexOf(left), baseline.indexOf(right));
+        const lastPosition = Math.max(baseline.indexOf(left), baseline.indexOf(right));
+        const previous = baseline.slice(0, firstPosition).reverse().find((event) => !pairKeys.has(event.key));
+        const next = baseline.slice(lastPosition + 1).find((event) => !pairKeys.has(event.key));
+        let outgoing = null;
+        let incoming = null;
+        if (previous?.managerKey === left.managerKey) outgoing = left;
+        if (previous?.managerKey === right.managerKey) outgoing = right;
+        if (next?.managerKey === left.managerKey) incoming = left;
+        if (next?.managerKey === right.managerKey) incoming = right;
+        if (outgoing && !incoming) incoming = outgoing === left ? right : left;
+        if (incoming && !outgoing) outgoing = incoming === left ? right : left;
+        if (!outgoing || !incoming || outgoing === incoming) continue;
+        const continuity = Number(previous?.managerKey === outgoing.managerKey) + Number(next?.managerKey === incoming.managerKey);
+        candidates.push({ outgoing, incoming, gap, continuity });
+      }
+    }
+    candidates
+      .sort((a, b) => b.continuity - a.continuity || a.gap - b.gap)
+      .forEach(({ outgoing, incoming }) => {
+        if (outgoing._transitionPair || incoming._transitionPair) return;
+        const transitionDate = [outgoing.date, incoming.date].filter(Boolean).sort().at(-1) || outgoing.date || incoming.date;
+        const pairId = outgoing.quarterId + '|handover|' + outgoing.managerKey + '|' + incoming.managerKey;
+        outgoing._transitionPair = pairId;
+        outgoing._transitionRole = 'outgoing';
+        outgoing._transitionDate = transitionDate;
+        incoming._transitionPair = pairId;
+        incoming._transitionRole = 'incoming';
+        incoming._transitionDate = transitionDate;
+      });
   });
   return copied.sort((a, b) => {
     const rank = quarterRank(a.quarterId) - quarterRank(b.quarterId);
@@ -715,7 +797,15 @@ function buildStoreRows() {
         managers.push({ key: event.managerKey, name: event.managerName, emp: event.managerEmp });
       }
     });
-    const handoverCount = events.filter((event) => event.note?.type === "handover" || event.note?.type === "replacement").length;
+    const officialHandovers = officialHandoversForStore(key);
+    const explicitPairs = new Set();
+    let unpairedExplicitHandovers = 0;
+    events.forEach((event) => {
+      if (event.note?.type !== "handover" && event.note?.type !== "replacement") return;
+      if (event._transitionPair) explicitPairs.add(event._transitionPair);
+      else unpairedExplicitHandovers += 1;
+    });
+    const handoverCount = officialHandovers.length + explicitPairs.size + unpairedExplicitHandovers;
     return {
       key,
       store: latestRows[0]?.store_group || latestRows[0]?.store || history.at(-1)?.store || "",
@@ -726,6 +816,7 @@ function buildStoreRows() {
       latestEvent,
       currentEvent,
       managers,
+      officialHandovers,
       managerChanges: Math.max(0, managers.length - 1),
       handoverCount,
     };
@@ -792,13 +883,17 @@ function tenureSummaryHtml(store) {
     const isCurrent = index === groups.length - 1 && last.quarterId === latestQuarter;
     const previous = groups[index - 1];
     const next = groups[index + 1];
-    const startBoundary = first._transitionRole === 'incoming'
+    const incomingOfficial = previous ? officialTransitionBetween(store.officialHandovers, previous.name, group.name) : null;
+    const outgoingOfficial = next ? officialTransitionBetween(store.officialHandovers, group.name, next.name) : null;
+    const startBoundary = incomingOfficial?.date || (first._transitionRole === 'incoming'
       ? first._transitionDate
       : previous
         ? (first._transitionDate || first.date)
-        : '';
+        : '');
     const nextFirst = next?.events?.[0];
-    const endBoundary = nextFirst
+    const endBoundary = outgoingOfficial?.date
+      ? previousDate(outgoingOfficial.date)
+      : nextFirst
       ? (last._transitionRole === 'outgoing' ? last._transitionDate : previousDate(nextFirst._transitionDate || nextFirst.date))
       : '';
     const period = index === 0 && first._transitionRole === 'outgoing'
@@ -818,7 +913,7 @@ function tenureSummaryHtml(store) {
       const previousManagerAvg = avg(previousScoreEvents.map((event) => event.score));
       const firstScoreIndex = group.events.indexOf(firstScoreEvent);
       const transitionEvents = previous.events.concat(group.events.slice(0, firstScoreIndex + 1));
-      const isHandover = transitionEvents.some((event) => event.note?.type === 'handover' || event.note?.type === 'replacement');
+      const isHandover = Boolean(incomingOfficial) || transitionEvents.some((event) => event.note?.type === 'handover' || event.note?.type === 'replacement');
       if (previousManagerAvg !== null) {
         const change = firstScoreEvent.score - previousManagerAvg;
         const direction = Math.abs(change) < 0.005 ? '동일합니다.' : change > 0 ? fmt2(Math.abs(change)) + '점 높습니다.' : fmt2(Math.abs(change)) + '점 낮습니다.';
@@ -833,8 +928,9 @@ function tenureSummaryHtml(store) {
     let transition = '';
     if (next) {
       const paired = last._transitionPair && last._transitionPair === nextFirst?._transitionPair;
-      const changeDate = paired ? last._transitionDate : (nextFirst?._transitionDate || nextFirst?.date || '');
-      const changeLabel = paired ? '인수인계' : '담당 변경';
+      const changeDate = outgoingOfficial?.date || (paired ? last._transitionDate : (nextFirst?._transitionDate || nextFirst?.date || ''));
+      const hasExplicitHandover = paired || [last, nextFirst].some((event) => event?.note?.type === 'handover' || event?.note?.type === 'replacement');
+      const changeLabel = outgoingOfficial || hasExplicitHandover ? '인수인계' : '담당 변경';
       transition = '<div class="tenure-transition"><i></i><span>' + esc([changeDate, changeLabel, next.name + ' 점장 인수'].filter(Boolean).join(' · ')) + '</span></div>';
     }
     return '<article class="tenure-explanation tenure-summary-' + group.colorIndex + '">' +
@@ -870,8 +966,15 @@ function scoreTrendSvg(store) {
     '<polyline class="store-score-line" points="' + scorePoints + '"></polyline>' +
     scoreEvents.map((event) => {
       const index = events.indexOf(event);
-      const noteMarker = event.note ? '<path class="handover-marker" d="M ' + (xAt(index) - 6) + ' ' + (yAt(event.score) - 13) + ' L ' + (xAt(index) + 6) + ' ' + (yAt(event.score) - 13) + ' L ' + xAt(index) + ' ' + (yAt(event.score) - 25) + ' Z"></path>' : '';
-      return '<g class="score-point"><circle cx="' + xAt(index) + '" cy="' + yAt(event.score) + '" r="6"><title>' + esc([event.quarterLabel, event.date, event.managerName + " · " + event.managerEmp, "점포 " + fmt2(event.score), "지역 평균 " + fmt2(event.regionAvg), event.note?.label || ""].filter(Boolean).join("\n")) + '</title></circle>' + noteMarker + '<text x="' + xAt(index) + '" y="' + (yAt(event.score) - 11) + '">' + fmt2(event.score) + '</text></g>';
+      const officialIncoming = officialTransitionForIncomingEvent(event, index, events, store.officialHandovers);
+      const pairedIncoming = event._transitionRole === 'outgoing' && event._transitionPair
+        ? events.find((candidate) => candidate._transitionPair === event._transitionPair && candidate._transitionRole === 'incoming')
+        : null;
+      const pairNeedsOutgoingMarker = Boolean(pairedIncoming && !Number.isFinite(pairedIncoming.score));
+      const showHandoverMarker = Boolean(officialIncoming) || event._transitionRole === 'incoming' || pairNeedsOutgoingMarker || (event.note && !event._transitionPair);
+      const noteMarker = showHandoverMarker ? '<path class="handover-marker" d="M ' + (xAt(index) - 6) + ' ' + (yAt(event.score) - 13) + ' L ' + (xAt(index) + 6) + ' ' + (yAt(event.score) - 13) + ' L ' + xAt(index) + ' ' + (yAt(event.score) - 25) + ' Z"></path>' : '';
+      const officialLabel = officialIncoming ? officialIncoming.date + ' 공식 인수인계' : '';
+      return '<g class="score-point"><circle cx="' + xAt(index) + '" cy="' + yAt(event.score) + '" r="6"><title>' + esc([event.quarterLabel, event.date, event.managerName + " · " + event.managerEmp, "점포 " + fmt2(event.score), "지역 평균 " + fmt2(event.regionAvg), officialLabel, event.note?.label || ""].filter(Boolean).join("\n")) + '</title></circle>' + noteMarker + '<text x="' + xAt(index) + '" y="' + (yAt(event.score) - 11) + '">' + fmt2(event.score) + '</text></g>';
     }).join("") +
     events.map((event, index) => '<text class="axis-label x" x="' + xAt(index) + '" y="' + (height - 28) + '">' + esc(storeAxisLabel(event, index, events).replace("\n", " · ")) + '</text>').join("") +
     '<g class="chart-legend" transform="translate(' + (width - 245) + ',16)"><line class="store-score-line" x1="0" x2="28" y1="0" y2="0"></line><text x="36" y="4">점포 점수</text><line class="region-average-line" x1="116" x2="144" y1="0" y2="0"></line><text x="152" y="4">당시 지역 평균</text></g>' +

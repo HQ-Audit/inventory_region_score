@@ -464,7 +464,9 @@ function quantityRecordKey(row, rec, index) {
 function quantityRecordsForPerson(person) {
   if (!person) return [];
   const records = [];
-  const sortedRows = person.history.slice().sort((a, b) => {
+  // 2025년 원천은 점수 이력만 보존하고 수량 상세가 없으므로
+  // 차이수량 탭의 선택 목록에는 2026년 이후 기록만 노출한다.
+  const sortedRows = person.history.filter((row) => quarterRank(row._quarterId) >= quarterRank("2026Q1")).sort((a, b) => {
     const q = quarterRank(b._quarterId) - quarterRank(a._quarterId);
     if (q) return q;
     return String(rowDate(b)).localeCompare(String(rowDate(a)));
@@ -1406,7 +1408,7 @@ function renderDetail(person) {
           '<span>' + esc(record.date || "날짜 없음") + ' · ' + fmt2(record.score) + '점' + marker + '</span>' +
         '</button>';
       }).join("") + '</div>'
-    : '<div class="empty compact">표시할 조사 기록이 없습니다.</div>';
+    : '<div class="empty compact">2025년 자료는 점수 이력만 제공합니다. 차이수량 상세는 2026년 자료부터 표시됩니다.</div>';
   const missingQuantityMessage = selectedRecord && quarterRank(selectedRecord.quarterId) < quarterRank("2026Q1")
     ? "2025년 자료는 점수 이력용으로 제공합니다. 수량 상세는 2026년 자료부터 표시됩니다."
     : "이 기록에는 신발/용품/의류/FNB 수량 상세가 없습니다.";
@@ -1419,7 +1421,6 @@ function renderDetail(person) {
     '<div class="quantity-panel">' +
       '<div class="detail-title">기록 선택</div>' +
       quantitySelector +
-      (selectedRecord ? '<div class="quantity-current"><strong>' + esc(selectedRecord.quarterLabel) + ' · ' + esc(selectedRecord.store || "-") + '</strong><span>' + esc(selectedRecord.date || "날짜 없음") + ' · ' + fmt2(selectedRecord.score) + '점</span></div>' : "") +
       quantityTable +
       '<p class="quantity-note">수량 차이는 점수 판단이 아닌 참고 수량입니다.</p>' +
     '</div>';

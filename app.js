@@ -632,6 +632,37 @@ function officialTransitionForIncomingEvent(event, eventIndex, events, transitio
   return null;
 }
 
+function quarterIdForDate(dateText) {
+  const match = String(dateText || "").match(/(20\d{2})-(\d{2})-(\d{2})/);
+  if (!match) return "";
+  return match[1] + "Q" + (Math.floor((Number(match[2]) - 1) / 3) + 1);
+}
+
+function officialHandoversForPerson(person) {
+  if (!person || !dataObj) return [];
+  const stores = new Set();
+  (person.history || []).forEach((row) => {
+    [row.store, row.store_group].filter(Boolean).forEach((store) => stores.add(storeValueKey(store)));
+    (row.records || []).forEach((record) => {
+      [assignedStoreForRecord(row, record), auditStoreForRecord(row, record)]
+        .filter(Boolean)
+        .forEach((store) => stores.add(storeValueKey(store)));
+    });
+  });
+  const selectedRank = quarterRank(currentQuarter);
+  return (Array.isArray(dataObj.officialHandovers) ? dataObj.officialHandovers : [])
+    .filter((item) => {
+      const qid = quarterIdForDate(item.date);
+      const matchesName = norm(item.outgoing) === norm(person.name) || norm(item.incoming) === norm(person.name);
+      return matchesName && stores.has(storeValueKey(item.store)) && quarterRank(qid) <= selectedRank;
+    })
+    .map((item) => ({
+      ...item,
+      quarterId: quarterIdForDate(item.date),
+      role: norm(item.incoming) === norm(person.name) ? "incoming" : "outgoing",
+    }));
+}
+
 function orderHandoverEvents(events) {
   const copied = events.map((event) => ({ ...event }));
   const baseline = copied.slice().sort((a, b) => {
@@ -1372,6 +1403,14 @@ function renderDetail(person) {
     if (q) return q;
     return String(rowDate(b)).localeCompare(String(rowDate(a)));
   });
+  const movementEvents = [
+    ...events.map((row) => ({ kind: "audit", date: rowDate(row), quarterId: row._quarterId, row })),
+    ...officialHandoversForPerson(person).map((transition) => ({ kind: "official", date: transition.date, quarterId: transition.quarterId, transition })),
+  ].sort((a, b) => {
+    const q = quarterRank(b.quarterId) - quarterRank(a.quarterId);
+    if (q) return q;
+    return String(b.date || "").localeCompare(String(a.date || ""));
+  });
   const recentTrend = trendLabel(person.delta);
   const quantityRecords = quantityRecordsForPerson(person);
   if (!selectedQuantityKey || !quantityRecords.some((record) => record.key === selectedQuantityKey)) {
@@ -1427,8 +1466,19 @@ function renderDetail(person) {
 
   const historyHtml =
     '<div class="detail-title">점포 / 지역 이동 이력</div>' +
-    '<p class="quantity-note">해당 점장이 어느 점포/지역 기준으로 평가됐는지 최신순으로 보여줍니다.</p>' +
-    '<div class="timeline">' + events.map((r) => '<div class="audit-event ' + (r._quarterId === currentQuarter ? "current-quarter" : "") + (isHandoverRow(r) ? " handover-event" : "") + '"><strong>' + esc(formatQuarterLabel(r._quarterId, r._quarterLabel)) + ' · ' + esc(r.store || "") + ' · ' + fmt2(r.ap_avg) + noteBadge(r) + '</strong><span>' + esc(eventMeta(r)) + '</span></div>').join("") + '</div>' +
+    '<p class="quantity-note">해당 점장의 평가 점포와 공식 인수인계 이력을 최신순으로 보여줍니다.</p>' +
+    '<div class="timeline">' + movementEvents.map((item) => {
+      if (item.kind === "official") {
+        const t = item.transition;
+        const roleText = t.role === "incoming" ? t.incoming + ' 점장 인수' : t.outgoing + ' 점장 인계';
+        const pairText = t.outgoing + ' 점장 인계 → ' + t.incoming + ' 점장 인수';
+        return '<div class="audit-event handover-event official-handover-event ' + (t.quarterId === currentQuarter ? "current-quarter" : "") + '">' +
+          '<strong>' + esc(formatQuarterLabel(t.quarterId, t.quarterId)) + ' · ' + esc(t.store || "") + ' · ' + esc(roleText) + '<em class="note-badge handover">인수인계</em></strong>' +
+          '<span>' + esc([t.date, "공식 인수인계 명단", pairText].filter(Boolean).join(" · ")) + '</span></div>';
+      }
+      const r = item.row;
+      return '<div class="audit-event ' + (r._quarterId === currentQuarter ? "current-quarter" : "") + (isHandoverRow(r) ? " handover-event" : "") + '"><strong>' + esc(formatQuarterLabel(r._quarterId, r._quarterLabel)) + ' · ' + esc(r.store || "") + ' · ' + fmt2(r.ap_avg) + noteBadge(r) + '</strong><span>' + esc(eventMeta(r)) + '</span></div>';
+    }).join("") + '</div>' +
     '<p class="notice detail-notice">선택한 분기 이후의 미래 데이터는 표시하지 않습니다. 2025년 이후 자료는 점장 흐름 확인용 기준입니다.</p>';
 
   const panelHtml = activeTab === "quantity" ? quantityHtml : activeTab === "history" ? historyHtml : summaryHtml;

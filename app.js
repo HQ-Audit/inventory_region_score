@@ -1,4 +1,4 @@
-const DATA_URL = "webdata.bin?v=20261007_official_handovers_1";
+const DATA_URL = "webdata.bin?v=20261007_score_owner_fix_1";
 const MAGIC = new TextEncoder().encode("SCOREENC\n");
 const SALT_LEN = 16;
 const NONCE_LEN = 12;
@@ -601,68 +601,6 @@ function previousDate(dateText) {
   return new Date(parsed - 86400000).toISOString().slice(0, 10);
 }
 
-function officialHandoversForStore(targetStoreKey) {
-  const transitions = Array.isArray(dataObj?.officialHandovers) ? dataObj.officialHandovers : [];
-  return transitions
-    .filter((item) => storeValueKey(item.store) === targetStoreKey)
-    .slice()
-    .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
-}
-
-function officialTransitionBetween(transitions, outgoingName, incomingName) {
-  return (transitions || []).find((item) =>
-    norm(item.outgoing) === norm(outgoingName) && norm(item.incoming) === norm(incomingName)
-  ) || null;
-}
-
-function officialTransitionForIncomingEvent(event, eventIndex, events, transitions) {
-  if (!Number.isFinite(event?.score)) return null;
-  for (const transition of transitions || []) {
-    if (norm(transition.incoming) !== norm(event.managerName)) continue;
-    let outgoingIndex = -1;
-    for (let index = 0; index < eventIndex; index += 1) {
-      if (norm(events[index].managerName) === norm(transition.outgoing)) outgoingIndex = index;
-    }
-    if (outgoingIndex < 0) continue;
-    const firstIncomingScoreIndex = events.findIndex((candidate, index) =>
-      index > outgoingIndex && norm(candidate.managerName) === norm(transition.incoming) && Number.isFinite(candidate.score)
-    );
-    if (firstIncomingScoreIndex === eventIndex) return transition;
-  }
-  return null;
-}
-
-function quarterIdForDate(dateText) {
-  const match = String(dateText || "").match(/(20\d{2})-(\d{2})-(\d{2})/);
-  if (!match) return "";
-  return match[1] + "Q" + (Math.floor((Number(match[2]) - 1) / 3) + 1);
-}
-
-function officialHandoversForPerson(person) {
-  if (!person || !dataObj) return [];
-  const stores = new Set();
-  (person.history || []).forEach((row) => {
-    [row.store, row.store_group].filter(Boolean).forEach((store) => stores.add(storeValueKey(store)));
-    (row.records || []).forEach((record) => {
-      [assignedStoreForRecord(row, record), auditStoreForRecord(row, record)]
-        .filter(Boolean)
-        .forEach((store) => stores.add(storeValueKey(store)));
-    });
-  });
-  const selectedRank = quarterRank(currentQuarter);
-  return (Array.isArray(dataObj.officialHandovers) ? dataObj.officialHandovers : [])
-    .filter((item) => {
-      const qid = quarterIdForDate(item.date);
-      const matchesName = norm(item.outgoing) === norm(person.name) || norm(item.incoming) === norm(person.name);
-      return matchesName && stores.has(storeValueKey(item.store)) && quarterRank(qid) <= selectedRank;
-    })
-    .map((item) => ({
-      ...item,
-      quarterId: quarterIdForDate(item.date),
-      role: norm(item.incoming) === norm(person.name) ? "incoming" : "outgoing",
-    }));
-}
-
 function orderHandoverEvents(events) {
   const copied = events.map((event) => ({ ...event }));
   const baseline = copied.slice().sort((a, b) => {
@@ -830,15 +768,7 @@ function buildStoreRows() {
         managers.push({ key: event.managerKey, name: event.managerName, emp: event.managerEmp });
       }
     });
-    const officialHandovers = officialHandoversForStore(key);
-    const explicitPairs = new Set();
-    let unpairedExplicitHandovers = 0;
-    events.forEach((event) => {
-      if (event.note?.type !== "handover" && event.note?.type !== "replacement") return;
-      if (event._transitionPair) explicitPairs.add(event._transitionPair);
-      else unpairedExplicitHandovers += 1;
-    });
-    const handoverCount = officialHandovers.length + explicitPairs.size + unpairedExplicitHandovers;
+    const handoverCount = events.filter((event) => event.note?.type === "handover" || event.note?.type === "replacement").length;
     return {
       key,
       store: latestRows[0]?.store_group || latestRows[0]?.store || history.at(-1)?.store || "",
@@ -849,7 +779,6 @@ function buildStoreRows() {
       latestEvent,
       currentEvent,
       managers,
-      officialHandovers,
       managerChanges: Math.max(0, managers.length - 1),
       handoverCount,
     };
@@ -916,17 +845,13 @@ function tenureSummaryHtml(store) {
     const isCurrent = index === groups.length - 1 && last.quarterId === latestQuarter;
     const previous = groups[index - 1];
     const next = groups[index + 1];
-    const incomingOfficial = previous ? officialTransitionBetween(store.officialHandovers, previous.name, group.name) : null;
-    const outgoingOfficial = next ? officialTransitionBetween(store.officialHandovers, group.name, next.name) : null;
-    const startBoundary = incomingOfficial?.date || (first._transitionRole === 'incoming'
+    const startBoundary = first._transitionRole === 'incoming'
       ? first._transitionDate
       : previous
         ? (first._transitionDate || first.date)
-        : '');
+        : '';
     const nextFirst = next?.events?.[0];
-    const endBoundary = outgoingOfficial?.date
-      ? previousDate(outgoingOfficial.date)
-      : nextFirst
+    const endBoundary = nextFirst
       ? (last._transitionRole === 'outgoing' ? last._transitionDate : previousDate(nextFirst._transitionDate || nextFirst.date))
       : '';
     const period = index === 0 && first._transitionRole === 'outgoing'
@@ -946,7 +871,7 @@ function tenureSummaryHtml(store) {
       const previousManagerAvg = avg(previousScoreEvents.map((event) => event.score));
       const firstScoreIndex = group.events.indexOf(firstScoreEvent);
       const transitionEvents = previous.events.concat(group.events.slice(0, firstScoreIndex + 1));
-      const isHandover = Boolean(incomingOfficial) || transitionEvents.some((event) => event.note?.type === 'handover' || event.note?.type === 'replacement');
+      const isHandover = transitionEvents.some((event) => event.note?.type === 'handover' || event.note?.type === 'replacement');
       if (previousManagerAvg !== null) {
         const change = firstScoreEvent.score - previousManagerAvg;
         const direction = Math.abs(change) < 0.005 ? '동일합니다.' : change > 0 ? fmt2(Math.abs(change)) + '점 높습니다.' : fmt2(Math.abs(change)) + '점 낮습니다.';
@@ -961,9 +886,9 @@ function tenureSummaryHtml(store) {
     let transition = '';
     if (next) {
       const paired = last._transitionPair && last._transitionPair === nextFirst?._transitionPair;
-      const changeDate = outgoingOfficial?.date || (paired ? last._transitionDate : (nextFirst?._transitionDate || nextFirst?.date || ''));
+      const changeDate = paired ? last._transitionDate : (nextFirst?._transitionDate || nextFirst?.date || '');
       const hasExplicitHandover = paired || [last, nextFirst].some((event) => event?.note?.type === 'handover' || event?.note?.type === 'replacement');
-      const changeLabel = outgoingOfficial || hasExplicitHandover ? '인수인계' : '담당 변경';
+      const changeLabel = hasExplicitHandover ? '인수인계' : '담당 변경';
       transition = '<div class="tenure-transition"><i></i><span>' + esc([changeDate, changeLabel, next.name + ' 점장 인수'].filter(Boolean).join(' · ')) + '</span></div>';
     }
     return '<article class="tenure-explanation tenure-summary-' + group.colorIndex + '">' +
@@ -999,15 +924,13 @@ function scoreTrendSvg(store) {
     '<polyline class="store-score-line" points="' + scorePoints + '"></polyline>' +
     scoreEvents.map((event) => {
       const index = events.indexOf(event);
-      const officialIncoming = officialTransitionForIncomingEvent(event, index, events, store.officialHandovers);
       const pairedIncoming = event._transitionRole === 'outgoing' && event._transitionPair
         ? events.find((candidate) => candidate._transitionPair === event._transitionPair && candidate._transitionRole === 'incoming')
         : null;
       const pairNeedsOutgoingMarker = Boolean(pairedIncoming && !Number.isFinite(pairedIncoming.score));
-      const showHandoverMarker = Boolean(officialIncoming) || event._transitionRole === 'incoming' || pairNeedsOutgoingMarker || (event.note && !event._transitionPair);
+      const showHandoverMarker = event._transitionRole === 'incoming' || pairNeedsOutgoingMarker || (event.note && !event._transitionPair);
       const noteMarker = showHandoverMarker ? '<path class="handover-marker" d="M ' + (xAt(index) - 6) + ' ' + (yAt(event.score) - 13) + ' L ' + (xAt(index) + 6) + ' ' + (yAt(event.score) - 13) + ' L ' + xAt(index) + ' ' + (yAt(event.score) - 25) + ' Z"></path>' : '';
-      const officialLabel = officialIncoming ? officialIncoming.date + ' 공식 인수인계' : '';
-      return '<g class="score-point"><circle cx="' + xAt(index) + '" cy="' + yAt(event.score) + '" r="6"><title>' + esc([event.quarterLabel, event.date, event.managerName + " · " + event.managerEmp, "점포 " + fmt2(event.score), "지역 평균 " + fmt2(event.regionAvg), officialLabel, event.note?.label || ""].filter(Boolean).join("\n")) + '</title></circle>' + noteMarker + '<text x="' + xAt(index) + '" y="' + (yAt(event.score) - 11) + '">' + fmt2(event.score) + '</text></g>';
+      return '<g class="score-point"><circle cx="' + xAt(index) + '" cy="' + yAt(event.score) + '" r="6"><title>' + esc([event.quarterLabel, event.date, event.managerName + " · " + event.managerEmp, "점포 " + fmt2(event.score), "지역 평균 " + fmt2(event.regionAvg), event.note?.label || ""].filter(Boolean).join("\n")) + '</title></circle>' + noteMarker + '<text x="' + xAt(index) + '" y="' + (yAt(event.score) - 11) + '">' + fmt2(event.score) + '</text></g>';
     }).join("") +
     events.map((event, index) => '<text class="axis-label x" x="' + xAt(index) + '" y="' + (height - 28) + '">' + esc(storeAxisLabel(event, index, events).replace("\n", " · ")) + '</text>').join("") +
     '<g class="chart-legend" transform="translate(' + (width - 245) + ',16)"><line class="store-score-line" x1="0" x2="28" y1="0" y2="0"></line><text x="36" y="4">점포 점수</text><line class="region-average-line" x1="116" x2="144" y1="0" y2="0"></line><text x="152" y="4">당시 지역 평균</text></g>' +
@@ -1403,14 +1326,6 @@ function renderDetail(person) {
     if (q) return q;
     return String(rowDate(b)).localeCompare(String(rowDate(a)));
   });
-  const movementEvents = [
-    ...events.map((row) => ({ kind: "audit", date: rowDate(row), quarterId: row._quarterId, row })),
-    ...officialHandoversForPerson(person).map((transition) => ({ kind: "official", date: transition.date, quarterId: transition.quarterId, transition })),
-  ].sort((a, b) => {
-    const q = quarterRank(b.quarterId) - quarterRank(a.quarterId);
-    if (q) return q;
-    return String(b.date || "").localeCompare(String(a.date || ""));
-  });
   const recentTrend = trendLabel(person.delta);
   const quantityRecords = quantityRecordsForPerson(person);
   if (!selectedQuantityKey || !quantityRecords.some((record) => record.key === selectedQuantityKey)) {
@@ -1451,7 +1366,9 @@ function renderDetail(person) {
   const missingQuantityMessage = selectedRecord && quarterRank(selectedRecord.quarterId) < quarterRank("2026Q1")
     ? "2025년 자료는 점수 이력용으로 제공합니다. 수량 상세는 2026년 자료부터 표시됩니다."
     : "이 기록에는 신발/용품/의류/FNB 수량 상세가 없습니다.";
-  const quantityTable = selectedRecord && selectedRecord.hasQuantity
+  const quantityTable = !selectedRecord
+    ? ""
+    : selectedRecord.hasQuantity
     ? '<div class="quantity-table-wrap"><table class="quantity-table"><thead><tr><th>구분</th><th class="num">전산</th><th class="num">실물</th><th class="num">차이</th></tr></thead><tbody>' +
       quantityRows(selectedRecord).map((row) => '<tr class="' + (row.total ? "total" : "") + '"><td>' + row.label + '</td><td class="num">' + fmtQty(row.system) + '</td><td class="num">' + fmtQty(row.actual) + '</td><td class="num ' + qtyClass(row.diff) + '">' + fmtQtyDiff(row.diff) + '</td></tr>').join("") +
       '</tbody></table></div>'
@@ -1466,19 +1383,8 @@ function renderDetail(person) {
 
   const historyHtml =
     '<div class="detail-title">점포 / 지역 이동 이력</div>' +
-    '<p class="quantity-note">해당 점장의 평가 점포와 공식 인수인계 이력을 최신순으로 보여줍니다.</p>' +
-    '<div class="timeline">' + movementEvents.map((item) => {
-      if (item.kind === "official") {
-        const t = item.transition;
-        const roleText = t.role === "incoming" ? t.incoming + ' 점장 인수' : t.outgoing + ' 점장 인계';
-        const pairText = t.outgoing + ' 점장 인계 → ' + t.incoming + ' 점장 인수';
-        return '<div class="audit-event handover-event official-handover-event ' + (t.quarterId === currentQuarter ? "current-quarter" : "") + '">' +
-          '<strong>' + esc(formatQuarterLabel(t.quarterId, t.quarterId)) + ' · ' + esc(t.store || "") + ' · ' + esc(roleText) + '<em class="note-badge handover">인수인계</em></strong>' +
-          '<span>' + esc([t.date, "공식 인수인계 명단", pairText].filter(Boolean).join(" · ")) + '</span></div>';
-      }
-      const r = item.row;
-      return '<div class="audit-event ' + (r._quarterId === currentQuarter ? "current-quarter" : "") + (isHandoverRow(r) ? " handover-event" : "") + '"><strong>' + esc(formatQuarterLabel(r._quarterId, r._quarterLabel)) + ' · ' + esc(r.store || "") + ' · ' + fmt2(r.ap_avg) + noteBadge(r) + '</strong><span>' + esc(eventMeta(r)) + '</span></div>';
-    }).join("") + '</div>' +
+    '<p class="quantity-note">해당 점장이 어느 점포/지역 기준으로 실제 평가됐는지 최신순으로 보여줍니다.</p>' +
+    '<div class="timeline">' + events.map((r) => '<div class="audit-event ' + (r._quarterId === currentQuarter ? "current-quarter" : "") + (isHandoverRow(r) ? " handover-event" : "") + '"><strong>' + esc(formatQuarterLabel(r._quarterId, r._quarterLabel)) + ' · ' + esc(r.store || "") + ' · ' + fmt2(r.ap_avg) + noteBadge(r) + '</strong><span>' + esc(eventMeta(r)) + '</span></div>').join("") + '</div>' +
     '<p class="notice detail-notice">선택한 분기 이후의 미래 데이터는 표시하지 않습니다. 2025년 이후 자료는 점장 흐름 확인용 기준입니다.</p>';
 
   const panelHtml = activeTab === "quantity" ? quantityHtml : activeTab === "history" ? historyHtml : summaryHtml;
